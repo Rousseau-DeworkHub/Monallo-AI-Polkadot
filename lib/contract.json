@@ -1,0 +1,146 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true, "name": "intentId", "type": "bytes32" },
+        { "indexed": true, "name": "user", "type": "address" },
+        { "indexed": false, "name": "action", "type": "string" },
+        { "indexed": false, "name": "amount", "type": "uint256" }
+      ],
+      "name": "IntentConfirmed",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": false, "name": "user", "type": "address" },
+        { "indexed": false, "name": "action", "type": "string" },
+        { "indexed": false, "name": "token", "type": "address" },
+        { "indexed": false, "name": "amount", "type": "uint256" },
+        { "indexed": false, "name": "recipient", "type": "address" },
+        { "indexed": false, "name": "intentId", "type": "bytes32" }
+      ],
+      "name": "IntentExecuted",
+      "type": "event"
+    },
+    {
+      "inputs": [{ "name": "user", "type": "address" }],
+      "name": "getNonce",
+      "outputs": [{ "name": "", "type": "uint256" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "name",
+      "outputs": [{ "name": "", "type": "string" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "owner",
+      "outputs": [{ "name": "", "type": "address" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "token", "type": "address" },
+        { "name": "amount", "type": "uint256" },
+        { "name": "recipient", "type": "address" },
+        { "name": "intentId", "type": "bytes32" }
+      ],
+      "name": "executeTransfer",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "user", "type": "address" },
+        { "name": "action", "type": "string" },
+        { "name": "nonce", "type": "uint256" }
+      ],
+      "name": "generateIntentId",
+      "outputs": [{ "name": "", "type": "bytes32" }],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "token", "type": "address" },
+        { "name": "amount", "type": "uint256" },
+        { "name": "destinationChainId", "type": "uint256" },
+        { "name": "recipient", "type": "address" },
+        { "name": "intentId", "type": "bytes32" }
+      ],
+      "name": "executeBridge",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "fromToken", "type": "address" },
+        { "name": "toToken", "type": "address" },
+        { "name": "amountIn", "type": "uint256" },
+        { "name": "minAmountOut", "type": "uint256" },
+        { "name": "intentId", "type": "bytes32" }
+      ],
+      "name": "executeSwap",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "amount", "type": "uint256" },
+        { "name": "validator", "type": "address" },
+        { "name": "intentId", "type": "bytes32" }
+      ],
+      "name": "executeStake",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "priceFeed",
+      "outputs": [{ "name": "", "type": "address" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [{ "name": "", "type": "bytes32" }],
+      "name": "executedIntents",
+      "outputs": [{ "name": "", "type": "bool" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "version",
+      "outputs": [{ "name": "", "type": "string" }],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        { "name": "token", "type": "address" },
+        { "name": "amount", "type": "uint256" }
+      ],
+      "name": "withdrawToken",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    { "stateMutability": "payable", "type": "receive" }
+  ]
+}

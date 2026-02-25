@@ -1,0 +1,11 @@
+{
+  "sepolia": {
+    "bridgeLock": "0x337C237dB281979Cf3f721AdBA5eB24f972311eC",
+    "wrappedPAS": "0x2D7a2F8C10b5E12f80e66018033bf81437D14546"
+  },
+  "polkadotHub": {
+    "bridgeLock": "0x06e803e3410b3239FEcdAAB34cB403188eDd1301",
+    "wrappedETH": "0xaD6e150747b8c1F063a35450D301E5f7D9C971A5"
+  },
+  "relayer": "0x98884e802E45D922ad669C858c737650492EfCB7"
+}
