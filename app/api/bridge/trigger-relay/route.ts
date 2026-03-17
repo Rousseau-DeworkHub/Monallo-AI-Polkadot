@@ -5,24 +5,29 @@ import path from "path";
 const SEPOLIA_CHAIN_ID = 11155111;
 const POLKADOT_HUB_CHAIN_ID = 420420417;
 
-/** POST: 前端在 lock/unlock 成功后调用，按源链执行一次 relay（后台运行，不阻塞响应，便于前端快速轮询） */
+/** POST: 前端在 lock/unlock 成功后调用。若传 sourceTxHash 则按该笔交易直接 relay（推荐）；否则按源链做一次区块轮询。 */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
     const sourceChainId =
       typeof body?.sourceChainId === "number" ? body.sourceChainId : undefined;
+    const sourceTxHash =
+      typeof body?.sourceTxHash === "string" && body.sourceTxHash.trim().startsWith("0x")
+        ? body.sourceTxHash.trim()
+        : undefined;
+    const scriptPath = path.join(
+      process.cwd(),
+      "scripts",
+      "relayer-bridge.mjs"
+    );
     const trigger =
       sourceChainId === SEPOLIA_CHAIN_ID
         ? String(SEPOLIA_CHAIN_ID)
         : sourceChainId === POLKADOT_HUB_CHAIN_ID
           ? String(POLKADOT_HUB_CHAIN_ID)
           : "all";
-    const scriptPath = path.join(
-      process.cwd(),
-      "scripts",
-      "relayer-bridge.mjs"
-    );
-    const child = spawn("node", [scriptPath, `--trigger=${trigger}`], {
+    const args = sourceTxHash ? [scriptPath, sourceTxHash] : [scriptPath, `--trigger=${trigger}`];
+    const child = spawn("node", args, {
       cwd: process.cwd(),
       stdio: ["ignore", "ignore", "pipe"],
       env: process.env,

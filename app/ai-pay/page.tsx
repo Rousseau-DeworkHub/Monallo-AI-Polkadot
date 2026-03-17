@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Bot, User, Loader2, CheckCircle2, ArrowRight, X, Wallet, ChevronLeft, Sparkles, Globe, Activity, RefreshCw, Shield, Layers, Settings, ChevronRight, DollarSign, Lock, Copy, TrendingUp, Upload, ExternalLink, History, ChevronDown, ArrowLeftRight } from "lucide-react";
+import { Send, Bot, User, Loader2, CheckCircle2, ArrowRight, X, Wallet, ChevronLeft, Sparkles, Globe, Activity, RefreshCw, Shield, Layers, Settings, ChevronRight, DollarSign, Lock, Copy, TrendingUp, Upload, ExternalLink, History, ChevronDown, ArrowLeftRight, BookUser, Trash2, Plus } from "lucide-react";
 import { useWallet, formatAddress, SUPPORTED_CHAINS, ChainInfo, WalletType, isMetaMaskAvailable } from "@/hooks/useWallet";
 import { fetchTokenPrices, fetchPolkadotBalance, mergeBalancesWithPrices, fetchOkxPrices, getOkxPriceForSymbol } from "@/lib/balances";
 import { sendViaWallet } from "@/lib/sendTransaction";
@@ -80,7 +81,6 @@ const TOKENS_BY_CHAIN: Record<string, TokenBalance[]> = {
 
 const quickActions = [
   { label: "Send", icon: Send, color: "from-[#9945FF] to-[#B45AFF]", description: "Transfer" },
-  { label: "Swap", icon: RefreshCw, color: "from-[#14F195] to-[#00D9FF]", description: "Exchange" },
   { label: "Bridge", icon: Layers, color: "from-[#B45AFF] to-[#FF4D9E]", description: "Cross-chain" },
   { label: "Stake", icon: TrendingUp, color: "from-[#F68521] to-[#FFB347]", description: "Rewards" },
 ];
@@ -88,6 +88,19 @@ const quickActions = [
 const BOT_NAME_KEY = "monallo_bot_name";
 const BOT_AVATAR_KEY = "monallo_bot_avatar";
 const USER_AVATAR_KEY = "monallo_user_avatar";
+const ADDRESS_BOOK_KEY = "monallo_address_book";
+
+/** Replace @Nickname (0x...) in message with raw address for API parsing */
+function replaceMentionWithAddress(message: string): string {
+  return message.replace(/@[^(]*\(\s*(0x[a-fA-F0-9]{40})\s*\)/g, "$1");
+}
+
+/** Address book entry: nickname + address whitelist */
+interface AddressBookContact {
+  id: string;
+  nickname: string;
+  address: string;
+}
 
 /** 千分位逗号分隔（用于余额、总价值等展示） */
 function formatWithCommas(
@@ -181,6 +194,12 @@ function normalizeSendBridgeIntent(
 function formatAddressShort(addr: string): string {
   if (!addr || !addr.startsWith("0x") || addr.length < 14) return addr;
   return addr.slice(0, 8) + "......" + addr.slice(-6);
+}
+
+/** Address as first 4 + last 4 (e.g. 0x1234...5678) for mention dropdown */
+function formatAddressFourFour(addr: string): string {
+  if (!addr || !addr.startsWith("0x") || addr.length < 12) return addr;
+  return addr.slice(0, 6) + "..." + addr.slice(-4);
 }
 
 function CopyButton({ text, className = "" }: { text: string; className?: string }) {
@@ -402,7 +421,7 @@ function ConfirmIntentModal({
   const handleCancel = () => (onCancel ?? onClose)();
   if (!intent) return null;
   const isBridge = intent.action === "Bridge";
-  const actionKey = ["Send", "Swap", "Bridge", "Stake"].includes(intent.action) ? intent.action : "Send";
+  const actionKey = ["Send", "Bridge", "Stake"].includes(intent.action) ? intent.action : "Send";
   const actionStyle = ACTION_STYLES[actionKey] ?? ACTION_STYLES.Send;
   const ActionIcon = actionStyle.icon;
   const getChainByNetwork = (name: string): ChainInfo | undefined =>
@@ -567,6 +586,229 @@ function ConfirmIntentModal({
                 </button>
               </div>
             </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function loadAddressBook(): AddressBookContact[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(ADDRESS_BOOK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((c): c is AddressBookContact => c && typeof c.id === "string" && typeof c.nickname === "string" && typeof c.address === "string");
+  } catch {
+    return [];
+  }
+}
+
+function saveAddressBook(list: AddressBookContact[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(ADDRESS_BOOK_KEY, JSON.stringify(list));
+}
+
+function AddressBookModal({
+  isOpen,
+  onClose,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+}) {
+  const [list, setList] = useState<AddressBookContact[]>([]);
+  const [nickname, setNickname] = useState("");
+  const [address, setAddress] = useState("");
+  const [addError, setAddError] = useState("");
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) setList(loadAddressBook());
+  }, [isOpen]);
+
+  const handleAdd = () => {
+    setAddError("");
+    setShowDuplicateModal(false);
+    const trimNick = nickname.trim();
+    const trimAddr = address.trim();
+    if (!trimNick) {
+      setAddError("Please enter a nickname");
+      return;
+    }
+    if (!trimAddr) {
+      setAddError("Please enter an address");
+      return;
+    }
+    if (!ethers.isAddress(trimAddr)) {
+      setAddError("Please enter a valid 0x address");
+      return;
+    }
+    const normalizedAddr = ethers.getAddress(trimAddr);
+    const isDuplicate = list.some((c) => ethers.getAddress(c.address) === normalizedAddr);
+    if (isDuplicate) {
+      setShowDuplicateModal(true);
+      return;
+    }
+    const next: AddressBookContact[] = [...list, { id: Date.now().toString(), nickname: trimNick, address: normalizedAddr }];
+    setList(next);
+    saveAddressBook(next);
+    setNickname("");
+    setAddress("");
+  };
+
+  const handleDelete = (id: string) => {
+    const next = list.filter((c) => c.id !== id);
+    setList(next);
+    saveAddressBook(next);
+  };
+
+  const initial = (name: string) => (name.slice(0, 1) || "?").toUpperCase();
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={onClose} />
+          <motion.div
+            initial={{ scale: 0.96, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.96, opacity: 0 }}
+            transition={{ type: "spring", damping: 25, stiffness: 300 }}
+            className="relative w-full max-w-md max-h-[88vh] flex flex-col rounded-3xl overflow-hidden border border-white/10 bg-[#0a0a0f] shadow-2xl"
+            style={{ boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 25px 50px -12px rgba(0,0,0,0.5), 0 0 60px -15px rgba(153,69,255,0.15)" }}
+          >
+            {/* Header */}
+            <div className="relative shrink-0 px-6 pt-6 pb-5 border-b border-white/5">
+              <div className="absolute inset-0 bg-gradient-to-b from-[#9945FF]/08 to-transparent pointer-events-none rounded-t-3xl" />
+              <div className="relative flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[#9945FF] to-[#7C3AED] shadow-lg shadow-[#9945FF]/25">
+                    <BookUser className="h-6 w-6 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold tracking-tight text-white">Address Book</h2>
+                    <p className="text-xs text-gray-400 mt-0.5">Nickname & address whitelist</p>
+                  </div>
+                </div>
+                <button type="button" onClick={onClose} className="p-2.5 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-colors" aria-label="Close"><X className="h-5 w-5" /></button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
+              {/* Add contact card */}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#9945FF]/15">
+                    <Plus className="h-4 w-4 text-[#9945FF]" />
+                  </div>
+                  <span className="text-sm font-semibold text-white">Add contact</span>
+                </div>
+                <input
+                  type="text"
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder="Nickname"
+                  className="w-full px-4 py-3 rounded-xl bg-[#111] border border-white/10 focus:border-[#9945FF]/50 focus:ring-1 focus:ring-[#9945FF]/20 outline-none text-white placeholder-gray-500 text-sm transition-colors"
+                />
+                <input
+                  type="text"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder="0x..."
+                  className="w-full px-4 py-3 rounded-xl bg-[#111] border border-white/10 focus:border-[#9945FF]/50 focus:ring-1 focus:ring-[#9945FF]/20 outline-none text-white placeholder-gray-500 text-sm font-mono transition-colors"
+                />
+                {addError && <p className="text-sm text-red-400/90">{addError}</p>}
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED] text-sm font-semibold text-white shadow-lg shadow-[#9945FF]/20 hover:shadow-[#9945FF]/30 hover:opacity-95 transition-all"
+                >
+                  <Plus className="h-4 w-4" /> Add
+                </button>
+              </div>
+
+              {/* Saved list */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium uppercase tracking-wider text-gray-500">Saved</span>
+                  {list.length > 0 && <span className="text-xs text-gray-500">{list.length} contact{list.length !== 1 ? "s" : ""}</span>}
+                </div>
+                {list.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 px-4 rounded-2xl border border-dashed border-white/10 bg-white/[0.02]">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/5 mb-4">
+                      <BookUser className="h-7 w-7 text-gray-500" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-400">No contacts yet</p>
+                    <p className="text-xs text-gray-500 mt-1 text-center max-w-[200px]">Add a nickname and address above to build your whitelist.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {list.map((c) => (
+                      <motion.div
+                        key={c.id}
+                        layout
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="group flex items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4 hover:border-white/15 hover:bg-white/[0.04] transition-all"
+                      >
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#9945FF]/20 to-[#7C3AED]/20 text-[#B45AFF] font-semibold text-lg">
+                          {initial(c.nickname)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-white truncate">{c.nickname}</div>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className="text-xs font-mono text-gray-400 truncate" title={c.address}>{formatAddressShort(c.address)}</span>
+                            <CopyButton text={c.address} className="p-1.5 rounded-lg hover:bg-white/10" />
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(c.id)}
+                          className="p-2.5 rounded-xl text-gray-400 hover:bg-red-500/15 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          title="Remove"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Duplicate address prompt - unified UI */}
+            <AnimatePresence>
+              {showDuplicateModal && (
+                <>
+                  <div className="absolute inset-0 z-10 bg-black/60 backdrop-blur-sm rounded-3xl" onClick={() => setShowDuplicateModal(false)} aria-hidden />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="absolute inset-0 z-20 flex items-center justify-center p-6 pointer-events-none"
+                  >
+                    <div className="pointer-events-auto w-full max-w-sm rounded-2xl border border-white/10 bg-[#0a0a0f] p-6 shadow-2xl" style={{ boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 25px 50px -12px rgba(0,0,0,0.5)" }}>
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/15">
+                          <Shield className="h-5 w-5 text-amber-400" />
+                        </div>
+                        <h3 className="text-lg font-semibold text-white">Duplicate address</h3>
+                      </div>
+                      <p className="text-sm text-gray-400 mb-6">This address is already in your address book. You cannot add duplicate addresses.</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowDuplicateModal(false)}
+                        className="w-full py-3 rounded-xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED] text-sm font-semibold text-white shadow-lg shadow-[#9945FF]/20 hover:opacity-95 transition-opacity"
+                      >
+                        OK
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </motion.div>
         </motion.div>
       )}
@@ -863,7 +1105,7 @@ function WalletModal({
 }
 
 export default function AIPayPage() {
-  const [messages, setMessages] = useState<Message[]>([{ id: "welcome", role: "assistant", content: "Welcome to Monallo AI Pay! Send, swap, bridge tokens using natural language.", timestamp: 0 }]);
+  const [messages, setMessages] = useState<Message[]>([{ id: "welcome", role: "assistant", content: "Welcome to Monallo AI Pay! Send, bridge, stake tokens using natural language. Polkadot-Hub Swap Coming Soon.", timestamp: 0 }]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [pendingIntent, setPendingIntent] = useState<ParsedIntent | null>(null);
@@ -881,6 +1123,7 @@ export default function AIPayPage() {
   const [showNetworkSelector, setShowNetworkSelector] = useState(false);
   const [networkSwitchError, setNetworkSwitchError] = useState<string | null>(null);
   const [showBotSettingsModal, setShowBotSettingsModal] = useState(false);
+  const [showAddressBookModal, setShowAddressBookModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showUserSettingsModal, setShowUserSettingsModal] = useState(false);
   const [showWalletDropdown, setShowWalletDropdown] = useState(false);
@@ -891,8 +1134,89 @@ export default function AIPayPage() {
   const [totalValueUsd, setTotalValueUsd] = useState(0);
   const [txCount, setTxCount] = useState(0);
   const [balancesLoading, setBalancesLoading] = useState(false);
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  const [mentionDropdownRect, setMentionDropdownRect] = useState<{ bottom: number; left: number; width: number } | null>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
 
   const getTokensForChain = () => { if (!chain) return []; return TOKENS_BY_CHAIN[chain.id] || []; };
+
+  const lastAtIndex = input.lastIndexOf("@");
+  const mentionQuery = lastAtIndex >= 0 ? input.slice(lastAtIndex + 1) : "";
+  const mentionList =
+    lastAtIndex >= 0 && typeof window !== "undefined"
+      ? loadAddressBook().filter((c) => {
+          const q = mentionQuery.trim().toLowerCase();
+          if (q.length === 0) return true;
+          return c.nickname.trim().toLowerCase().startsWith(q);
+        })
+      : [];
+  const showMentionDropdown = lastAtIndex >= 0;
+  const clampedMentionIndex = Math.min(Math.max(0, mentionSelectedIndex), Math.max(0, mentionList.length - 1));
+
+  useEffect(() => {
+    setMentionSelectedIndex(0);
+  }, [mentionQuery]);
+
+  useEffect(() => {
+    if (!showMentionDropdown || !chatInputRef.current) {
+      setMentionDropdownRect(null);
+      return;
+    }
+    const updateRect = () => {
+      if (!chatInputRef.current) return;
+      const rect = chatInputRef.current.getBoundingClientRect();
+      const width = Math.min(Math.max(rect.width * 0.72, 200), 280);
+      setMentionDropdownRect({
+        bottom: typeof window !== "undefined" ? window.innerHeight - rect.top + 8 : 0,
+        left: rect.left,
+        width,
+      });
+    };
+    updateRect();
+    window.addEventListener("scroll", updateRect, true);
+    window.addEventListener("resize", updateRect);
+    return () => {
+      window.removeEventListener("scroll", updateRect, true);
+      window.removeEventListener("resize", updateRect);
+    };
+  }, [showMentionDropdown, input]);
+
+  const handleMentionSelect = (contact: AddressBookContact) => {
+    const newInput = input.slice(0, lastAtIndex) + `@${contact.nickname} (${contact.address})`;
+    setInput(newInput);
+    setMentionSelectedIndex(0);
+    chatInputRef.current?.focus();
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value);
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape" && showMentionDropdown) {
+      e.preventDefault();
+      setInput(input.slice(0, lastAtIndex));
+      setMentionSelectedIndex(0);
+      chatInputRef.current?.focus();
+      return;
+    }
+    if (!showMentionDropdown || mentionList.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setMentionSelectedIndex((i) => Math.min(i + 1, mentionList.length - 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setMentionSelectedIndex((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (e.key === "Enter" && mentionList[clampedMentionIndex]) {
+      e.preventDefault();
+      handleMentionSelect(mentionList[clampedMentionIndex]);
+      return;
+    }
+  };
 
   const fetchBalances = async () => {
     if (!address || !chain) return;
@@ -952,7 +1276,7 @@ export default function AIPayPage() {
 
   // 聊天记录严格对应用户地址：切换地址或断开时清空对话，避免 B 地址看到 A 地址的聊天
   useEffect(() => {
-    setMessages([{ id: "welcome", role: "assistant", content: "Welcome to Monallo AI Pay! Send, swap, bridge tokens using natural language.", timestamp: 0 }]);
+    setMessages([{ id: "welcome", role: "assistant", content: "Welcome to Monallo AI Pay! Send, bridge, stake tokens using natural language. Polkadot-Hub Swap Coming Soon.", timestamp: 0 }]);
     setPendingIntent(null);
     setShowConfirmModal(false);
     setBridgeType(null);
@@ -1040,9 +1364,7 @@ export default function AIPayPage() {
       return { ...empty, action: "Send", amount: amt, token, receiver: addr, source_network: network, target_network: network };
     }
     if (l.includes("swap") || l.includes("换") || l.includes("exchange")) {
-      const from = l.includes("usdt") ? "USDT" : l.includes("dot") ? "DOT" : "ETH";
-      const to = l.includes("for eth") || l.includes("换成 eth") ? "ETH" : l.includes("for usdt") ? "USDT" : l.includes("for dot") ? "DOT" : "ETH";
-      return { ...empty, action: "Swap", amount: amt, from_token: from, to_token: to, token: from };
+      return { ...empty, action: "Unknown" };
     }
     if (l.includes("bridge") || l.includes("跨链")) {
       const src = l.includes("sepolia") ? "Sepolia" : l.includes("polkadot") || l.includes("hub") ? "Polkadot Hub" : "";
@@ -1058,7 +1380,9 @@ export default function AIPayPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading || !isConnected) return;
-    const userMsg: Message = { id: Date.now().toString(), role: "user", content: input.trim(), timestamp: Date.now() };
+    const rawContent = input.trim();
+    const contentForApi = replaceMentionWithAddress(rawContent);
+    const userMsg: Message = { id: Date.now().toString(), role: "user", content: rawContent, timestamp: Date.now() };
     const parsingId = `parsing-${Date.now()}`;
     const parsingMsg: Message = { id: parsingId, role: "assistant", content: "Using AI to parse your intent...", timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg, parsingMsg]);
@@ -1076,7 +1400,7 @@ export default function AIPayPage() {
       res = await fetch("/api/parse-intent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content }),
+        body: JSON.stringify({ message: contentForApi }),
       });
       data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     } catch {
@@ -1086,9 +1410,9 @@ export default function AIPayPage() {
     try {
       let intent: ParsedIntent;
       if (!res || !res.ok) {
-        intent = parseIntentLocal(userMsg.content);
+        intent = parseIntentLocal(contentForApi);
         if (intent.action === "Unknown") {
-          const errMsg = (res && typeof data.error === "string") ? data.error : "网络或服务异常，请检查后重试。可尝试：「Send 0.01 ETH to 0x...」或「Swap 10 USDT for ETH」。";
+          const errMsg = (res && typeof data.error === "string") ? data.error : "网络或服务异常，请检查后重试。可尝试：「Send 0.01 ETH to 0x...」或「Bridge 0.1 ETH to Polkadot」。";
           removeParsingAndAppend(errMsg);
           return;
         }
@@ -1099,8 +1423,21 @@ export default function AIPayPage() {
         setShowConfirmModal(true);
       } else {
         intent = data as unknown as ParsedIntent;
+        const usage = (data as { usage?: { total_tokens?: number } }).usage;
+        const walletAddr = (evmAddress || address || "").trim();
+        if (usage?.total_tokens && walletAddr) {
+          fetch("/api/store/consumption", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              wallet_address: walletAddr,
+              model_name: "MiniMax M2.5",
+              tokens_consumed: usage.total_tokens,
+            }),
+          }).catch(() => {});
+        }
         if (intent.action === "Unknown" || !intent.action) {
-          removeParsingAndAppend("未识别到 DeFi 操作（Send / Swap / Bridge / Stake）。请尝试例如：「Send 0.01 ETH to 0x...」或「Swap 10 USDT for ETH」。");
+          removeParsingAndAppend("未识别到 DeFi 操作（Send / Bridge / Stake）。请尝试例如：「Send 0.01 ETH to 0x...」或「Bridge 0.1 ETH to Polkadot」。Polkadot-Hub Swap Coming Soon.");
           return;
         }
         const summary = `${intent.action}${intent.amount ? ` ${intent.amount} ${intent.token || intent.from_token || ""}` : ""}${intent.receiver ? ` → ${intent.receiver.slice(0, 10)}...` : ""}`;
@@ -1117,6 +1454,12 @@ export default function AIPayPage() {
 
   const handleConfirmIntent = async () => {
     if (!pendingIntent || !address) return;
+    if (pendingIntent.action === "Swap") {
+      setShowConfirmModal(false);
+      setMessages(prev => [...prev, { id: Date.now().toString(), role: "assistant", content: "Polkadot-Hub Swap Coming Soon.", timestamp: Date.now() }]);
+      setPendingIntent(null);
+      return;
+    }
     setShowConfirmModal(false);
     setIsConfirming(true);
 
@@ -1214,7 +1557,7 @@ export default function AIPayPage() {
           destinationChainId: bridgeTargetChain.chainId,
           amount,
         });
-        fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain.chainId }) }).catch(() => {});
+        fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain.chainId, sourceTxHash: txHash }) }).catch(() => {});
         const explorerUrl = bridgeSourceChain.explorer ? `${bridgeSourceChain.explorer}/tx/${txHash}` : undefined;
         const receiptText = `Unlocked ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || ""} → ${bridgeTargetChain.name}. Waiting for relay. ✓`;
         setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
@@ -1241,7 +1584,7 @@ export default function AIPayPage() {
           destinationChainId: bridgeTargetChain!.chainId,
           amount,
         });
-        fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain!.chainId }) }).catch(() => {});
+        fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain!.chainId, sourceTxHash: txHash }) }).catch(() => {});
         const explorerUrl = bridgeSourceChain!.explorer ? `${bridgeSourceChain!.explorer}/tx/${txHash}` : undefined;
         const receiptText = `Locked ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || "ETH"} → ${bridgeTargetChain!.name}. Waiting for relay. ✓`;
         setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
@@ -1292,7 +1635,7 @@ export default function AIPayPage() {
           fetch("/api/bridge/trigger-relay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sourceChainId }),
+            body: JSON.stringify({ sourceChainId, sourceTxHash }),
           }).catch(() => {});
         }
         const res = await fetch(
@@ -1346,7 +1689,6 @@ export default function AIPayPage() {
     const primary = chain?.id === "polkadot-hub-testnet" ? "PAS" : "ETH";
     const p: Record<string, string> = {
       Send: `Send 0.001 ${primary} to 0x`,
-      Swap: `Swap 10 USDT for ${primary}`,
       Bridge: primary === "ETH" ? "Bridge 0.1 ETH to Polkadot" : "Bridge 0.1 PAS to Sepolia",
       Stake: `Stake 1 ${primary}`,
     };
@@ -1374,6 +1716,7 @@ export default function AIPayPage() {
       />
       <NetworkSelector isOpen={showNetworkSelector} onClose={() => { setShowNetworkSelector(false); setNetworkSwitchError(null); }} currentChain={chain} onSelect={async c => { if (c.chainId !== chain?.chainId) await switchChain(c.chainId); }} switchError={networkSwitchError} onClearSwitchError={() => setNetworkSwitchError(null)} onSwitchError={setNetworkSwitchError} />
       <BotSettingsModal isOpen={showBotSettingsModal} onClose={() => setShowBotSettingsModal(false)} name={botName} avatar={botAvatarUrl} onSave={handleBotSettingsSave} />
+      <AddressBookModal isOpen={showAddressBookModal} onClose={() => setShowAddressBookModal(false)} />
       <ConfirmIntentModal isOpen={showConfirmModal} onClose={() => setShowConfirmModal(false)} onCancel={() => { setShowConfirmModal(false); setPendingIntent(null); setBridgeType(null); }} intent={pendingIntent} bridgeType={bridgeType} onBridgeTypeChange={setBridgeType} onConfirm={handleConfirmIntent} isConfirming={isConfirming} />
       <HistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} walletAddress={address} />
       <UserSettingsModal isOpen={showUserSettingsModal} onClose={() => setShowUserSettingsModal(false)} address={address} avatar={userAvatarUrl} onSaveAvatar={handleUserAvatarSave} />
@@ -1433,7 +1776,7 @@ export default function AIPayPage() {
                   <span className="text-sm text-[#9945FF]">AI-Powered DeFi</span>
                 </div>
                 <h1 className="text-3xl lg:text-4xl font-bold text-white mb-4">Cross-Chain <span className="bg-gradient-to-r from-[#9945FF] to-[#14F195] bg-clip-text text-transparent">Simplified</span></h1>
-                <p className="text-gray-400 mb-8">Send, swap, bridge tokens using natural language.</p>
+                <p className="text-gray-400 mb-8">Send, bridge, stake tokens using natural language. Polkadot-Hub Swap Coming Soon.</p>
                 <div className="flex gap-4">
                   {!isConnected && <button onClick={() => setShowWalletModal(true)} className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED]"><Wallet className="w-5 h-5" />Connect</button>}
                   <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/5 border border-white/10"><Lock className="w-4 h-4 text-[#14F195]" /><span className="text-sm text-gray-300">Secure</span></div>
@@ -1468,6 +1811,20 @@ export default function AIPayPage() {
                 <span className="text-sm text-gray-500">{action.description}</span>
               </motion.button>
             ))}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.25 }}
+              className="flex flex-col items-center justify-center text-center p-6 rounded-2xl bg-[#0d0d14] border border-white/5 border-dashed min-h-[140px] opacity-70"
+            >
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#14F195] to-[#00D9FF] flex items-center justify-center mb-4 shrink-0">
+                <RefreshCw className="w-7 h-7 text-white" />
+              </div>
+              <span className="font-bold text-white block mb-1">Polkadot-Hub Swap</span>
+              <span className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-[#9945FF]/15 text-[#B45AFF] border border-[#9945FF]/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#B45AFF] animate-pulse" /> Coming Soon
+              </span>
+            </motion.div>
           </div>
         </motion.div>
         <div className="grid lg:grid-cols-3 gap-8">
@@ -1537,6 +1894,7 @@ export default function AIPayPage() {
                 </div>
                 <div className="flex items-center gap-1">
                   <button type="button" onClick={() => setShowHistoryModal(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="History"><History className="w-5 h-5" /></button>
+                  <button type="button" onClick={() => setShowAddressBookModal(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="Address Book"><BookUser className="w-5 h-5" /></button>
                   <button type="button" onClick={() => setShowBotSettingsModal(true)} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="设置"><Settings className="w-5 h-5" /></button>
                 </div>
               </div>
@@ -1615,11 +1973,74 @@ export default function AIPayPage() {
                 <div ref={messagesEndRef} />
               </div>
               <form onSubmit={handleSubmit} className="p-4 border-t border-white/5">
-                <div className="relative flex items-center">
-                  <input type="text" value={input} onChange={e => setInput(e.target.value)} placeholder={!isConnected ? "Connect wallet..." : "Describe what you want..."} disabled={!isConnected || isLoading} className="w-full px-5 py-4 pr-14 rounded-2xl bg-[#14141f] border border-white/10 focus:border-[#9945FF]/50 disabled:opacity-50" />
-                  <button type="submit" disabled={!isConnected || !input.trim() || isLoading} className="absolute right-2 p-2.5 rounded-xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED] disabled:opacity-50">
-                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                  </button>
+                <div className="relative flex flex-col gap-0">
+                  <div className="relative flex items-center">
+                    <input
+                      ref={chatInputRef}
+                      type="text"
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyDown={handleInputKeyDown}
+                      placeholder={!isConnected ? "Connect wallet..." : "Describe what you want... Type @ to mention a contact"}
+                      disabled={!isConnected || isLoading}
+                      className="w-full px-5 py-4 pr-14 rounded-2xl bg-[#14141f] border border-white/10 focus:border-[#9945FF]/50 disabled:opacity-50"
+                    />
+                    <button type="submit" disabled={!isConnected || !input.trim() || isLoading} className="absolute right-2 p-2.5 rounded-xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED] disabled:opacity-50">
+                      {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                    </button>
+                  </div>
+                  {typeof document !== "undefined" &&
+                    showMentionDropdown &&
+                    mentionDropdownRect &&
+                    createPortal(
+                      <AnimatePresence>
+                        <motion.div
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 8 }}
+                          transition={{ duration: 0.15 }}
+                          className="max-h-64 overflow-y-auto rounded-2xl border border-white/10 bg-[#0a0a0f] py-1.5 shadow-xl z-[100]"
+                          style={{
+                            position: "fixed",
+                            bottom: mentionDropdownRect.bottom,
+                            left: mentionDropdownRect.left,
+                            width: mentionDropdownRect.width,
+                            boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 24px 48px -12px rgba(0,0,0,0.5), 0 0 40px -10px rgba(153,69,255,0.12)",
+                          }}
+                        >
+                          {mentionList.length === 0 ? (
+                            <div className="px-4 py-4 text-center">
+                              <p className="text-sm text-gray-400">No contact matches</p>
+                              <p className="text-xs text-gray-500 mt-1">Add contacts in Address Book</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-0.5 p-1.5">
+                              {mentionList.map((c, i) => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() => handleMentionSelect(c)}
+                                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
+                                    i === clampedMentionIndex
+                                      ? "bg-[#9945FF]/15 text-white ring-1 ring-[#9945FF]/30"
+                                      : "text-gray-300 hover:bg-white/8 hover:text-white"
+                                  }`}
+                                >
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#9945FF]/25 to-[#7C3AED]/25 text-sm font-semibold text-[#B45AFF]">
+                                    {(c.nickname.slice(0, 1) || "?").toUpperCase()}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-semibold text-white truncate">{c.nickname}</div>
+                                    <div className="font-mono text-xs text-gray-500 truncate mt-0.5">{formatAddressFourFour(c.address)}</div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </motion.div>
+                      </AnimatePresence>,
+                      document.body
+                    )}
                 </div>
               </form>
             </div>

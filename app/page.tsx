@@ -3,13 +3,13 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ChevronDown, Zap, Cpu, Video, Wallet, ArrowRight, Globe, Sparkles, Layers, Menu } from "lucide-react";
+import { ChevronDown, Zap, Cpu, Wallet, ArrowRight, Globe, Sparkles, Layers, Menu, Store } from "lucide-react";
 
 const products = [
-  { id: "pay", name: "Monallo Pay", description: "AI-Powered Intent Recognition & DeFi", icon: Wallet, href: "/ai-pay", status: "Live", color: "from-[#9945FF] to-[#B45AFF]" },
-  { id: "bridge", name: "Monallo Bridge", description: "Cross-Chain Asset Bridge", icon: Layers, href: "/bridge", status: "Coming Soon", color: "from-[#14F195] to-[#00D9FF]", disabled: true },
-  { id: "video", name: "Monallo Video", description: "AI-Powered Video Generation", icon: Video, href: "/ai-video", status: "Coming Soon", color: "from-[#B45AFF] to-[#FF4D9E]", disabled: true },
-  { id: "ai", name: "Monallo AI", description: "General AI Assistant", icon: Sparkles, href: "/ai", status: "Coming Soon", color: "from-[#F68521] to-[#FFB347]", disabled: true }
+  { id: "pay", name: "Monallo Pay", description: "AI-Powered Intent Recognition & DeFi", icon: Wallet, href: "/ai-pay", status: "Live", color: "from-[#9945FF] to-[#B45AFF]", disabled: false },
+  { id: "bridge", name: "Monallo Bridge", description: "Cross-Chain Asset Bridge", icon: Layers, href: "/bridge", status: "Live", color: "from-[#14F195] to-[#00D9FF]", disabled: false },
+  { id: "store", name: "Monallo Store", description: "LLM Token Store", icon: Store, href: "/store", status: "Live", color: "from-[#F68521] to-[#FFB347]", disabled: false },
+  { id: "ai", name: "Monallo AI", description: "General AI Assistant", icon: Sparkles, href: "/ai", status: "Coming Soon", color: "from-[#E6007A] to-[#B45AFF]", disabled: true }
 ];
 
 const features = [
@@ -29,7 +29,7 @@ const statsLabels = [
 const roadmap = [
   { phase: "Phase 1", title: "Foundation", items: ["AI Pay", "EVM Support", "MetaMask"], status: "completed" },
   { phase: "Phase 2", title: "Expansion", items: ["PVM Support", "Bridge", "Mobile"], status: "completed" },
-  { phase: "Phase 3", title: "Growth", items: ["AI Video", "NFT Market", "DAO"], status: "planned" },
+  { phase: "Phase 3", title: "Growth", items: ["LLM Token Store", "NFT Market", "DAO"], status: "planned" },
   { phase: "Phase 4", title: "Ecosystem", items: ["DeFi Agg", "Launchpad", "DEX"], status: "planned" }
 ];
 
@@ -76,13 +76,15 @@ export default function Home() {
               {dropdownOpen && (
                 <div className="absolute top-full left-0 mt-2 w-72 bg-[#111] border border-white/10 rounded-2xl p-2 shadow-2xl">
                 {products.map(p => (
-                  <Link key={p.id} href={p.href} onClick={() => setDropdownOpen(false)} className={`flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 ${p.disabled ? 'opacity-50' : ''}`}>
+                  <Link key={p.id} href={p.href} onClick={() => setDropdownOpen(false)} className={`flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 ${p.disabled ? 'opacity-60 cursor-default' : ''}`}>
                     <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${p.color} flex items-center justify-center`}>
                       <p.icon className="w-5 h-5 text-white" />
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="font-medium">{p.name}</div>
-                      <div className="text-xs text-gray-500">{p.status}</div>
+                      <span className={`inline-block mt-0.5 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md ${p.status === "Live" ? "bg-[#14F195]/15 text-[#14F195] border border-[#14F195]/30" : "bg-white/5 text-gray-400 border border-white/10"}`}>
+                        {p.status}
+                      </span>
                     </div>
                   </Link>
                 ))}

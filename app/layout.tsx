@@ -11,7 +11,7 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: "Monallo | AI-Powered Web3 Product Suite",
   description: "Monallo is an AI-powered decentralized application suite built on Polkadot.",
-  keywords: ["Monallo", "AI", "Web3", "Polkadot", "DeFi", "Blockchain", "AI Video"],
+  keywords: ["Monallo", "AI", "Web3", "Polkadot", "DeFi", "Blockchain"],
   icons: {
     icon: "/favicon.png",
     apple: "/favicon.png",

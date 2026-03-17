@@ -63,8 +63,326 @@ function getDb(): Database.Database {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_unlock_proof ON bridge_unlock(source_chain_id, source_tx_hash, nonce);
     CREATE INDEX IF NOT EXISTS idx_bridge_unlock_status ON bridge_unlock(source_chain_id, source_tx_hash);
+    CREATE TABLE IF NOT EXISTS store_purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      token_count INTEGER NOT NULL,
+      amount TEXT NOT NULL,
+      token TEXT NOT NULL,
+      amount_usd REAL NOT NULL,
+      tx_hash TEXT,
+      chain_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_purchases_wallet ON store_purchases(wallet_address);
+    CREATE TABLE IF NOT EXISTS store_consumption (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      tokens_consumed INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_consumption_wallet ON store_consumption(wallet_address);
+    CREATE TABLE IF NOT EXISTS store_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS store_api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES store_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_api_keys_user ON store_api_keys(user_id);
+    CREATE TABLE IF NOT EXISTS store_usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_mon INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES store_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_usage_user_created ON store_usage_events(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS store_settlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      wallet_address TEXT NOT NULL,
+      settlement_date TEXT NOT NULL,
+      opening_balance INTEGER NOT NULL,
+      usage_mon INTEGER NOT NULL,
+      closing_balance INTEGER NOT NULL,
+      tx_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      unique_id TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES store_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_settlements_date ON store_settlements(settlement_date);
+    CREATE TABLE IF NOT EXISTS store_credit_mints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tx_hash TEXT NOT NULL,
+      chain_id INTEGER NOT NULL,
+      wallet_address TEXT NOT NULL,
+      amount_mon INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(tx_hash, chain_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_credit_mints_tx ON store_credit_mints(tx_hash, chain_id);
   `);
   return db;
+}
+
+export interface StorePurchaseRow {
+  id: number;
+  wallet_address: string;
+  model_name: string;
+  token_count: number;
+  amount: string;
+  token: string;
+  amount_usd: number;
+  tx_hash: string | null;
+  chain_id: number;
+  created_at: number;
+}
+
+export function insertStorePurchase(row: {
+  wallet_address: string;
+  model_name: string;
+  token_count: number;
+  amount: string;
+  token: string;
+  amount_usd: number;
+  tx_hash?: string | null;
+  chain_id: number;
+}): StorePurchaseRow {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO store_purchases (wallet_address, model_name, token_count, amount, token, amount_usd, tx_hash, chain_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    row.wallet_address,
+    row.model_name,
+    row.token_count,
+    row.amount,
+    row.token,
+    row.amount_usd,
+    row.tx_hash ?? null,
+    row.chain_id,
+    created_at
+  );
+  return db.prepare("SELECT * FROM store_purchases WHERE id = last_insert_rowid()").get() as StorePurchaseRow;
+}
+
+export function listStorePurchases(walletAddress: string, limit = 100): StorePurchaseRow[] {
+  const db = getDb();
+  const stmt = db.prepare(
+    "SELECT * FROM store_purchases WHERE wallet_address = ? ORDER BY created_at DESC LIMIT ?"
+  );
+  return stmt.all(walletAddress, limit) as StorePurchaseRow[];
+}
+
+export interface StoreConsumptionRow {
+  id: number;
+  wallet_address: string;
+  model_name: string;
+  tokens_consumed: number;
+  created_at: number;
+}
+
+export function insertStoreConsumption(row: {
+  wallet_address: string;
+  model_name: string;
+  tokens_consumed: number;
+}): StoreConsumptionRow {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO store_consumption (wallet_address, model_name, tokens_consumed, created_at)
+     VALUES (?, ?, ?, ?)`
+  ).run(row.wallet_address, row.model_name, row.tokens_consumed, created_at);
+  return db.prepare("SELECT * FROM store_consumption WHERE id = last_insert_rowid()").get() as StoreConsumptionRow;
+}
+
+export function listStoreConsumption(walletAddress: string, limit = 100): StoreConsumptionRow[] {
+  const db = getDb();
+  const stmt = db.prepare(
+    "SELECT * FROM store_consumption WHERE wallet_address = ? ORDER BY created_at DESC LIMIT ?"
+  );
+  return stmt.all(walletAddress, limit) as StoreConsumptionRow[];
+}
+
+// --- Store credit ledger (on-chain + daily settlement) ---
+
+export interface StoreUserRow {
+  id: number;
+  wallet_address: string;
+  created_at: number;
+}
+
+export function getOrCreateStoreUser(walletAddress: string): StoreUserRow {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  let row = db.prepare("SELECT * FROM store_users WHERE wallet_address = ?").get(normalized) as StoreUserRow | undefined;
+  if (!row) {
+    const created_at = Math.floor(Date.now() / 1000);
+    db.prepare("INSERT INTO store_users (wallet_address, created_at) VALUES (?, ?)").run(normalized, created_at);
+    row = db.prepare("SELECT * FROM store_users WHERE id = last_insert_rowid()").get() as StoreUserRow;
+  }
+  return row;
+}
+
+export function getStoreUserByWallet(walletAddress: string): StoreUserRow | null {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM store_users WHERE wallet_address = ?").get(walletAddress.trim().toLowerCase()) as StoreUserRow | undefined;
+  return row ?? null;
+}
+
+export function insertStoreApiKey(userId: number, keyHash: string): void {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare("INSERT INTO store_api_keys (user_id, key_hash, created_at) VALUES (?, ?, ?)").run(userId, keyHash, created_at);
+}
+
+export function getStoreUserByKeyHash(keyHash: string): StoreUserRow | null {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT u.* FROM store_users u INNER JOIN store_api_keys k ON u.id = k.user_id WHERE k.key_hash = ?"
+  ).get(keyHash) as StoreUserRow | undefined;
+  return row ?? null;
+}
+
+export function insertStoreUsageEvent(row: {
+  user_id: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_mon: number;
+}): void {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    "INSERT INTO store_usage_events (user_id, model, prompt_tokens, completion_tokens, cost_mon, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(row.user_id, row.model, row.prompt_tokens, row.completion_tokens, row.cost_mon, created_at);
+}
+
+/** Sum cost_mon for a user in [startTs, endTs) (Unix seconds). */
+export function getStoreUsageSumByUserAndRange(userId: number, startTs: number, endTs: number): number {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT COALESCE(SUM(cost_mon), 0) as total FROM store_usage_events WHERE user_id = ? AND created_at >= ? AND created_at < ?"
+  ).get(userId, startTs, endTs) as { total: number };
+  return Number(row?.total ?? 0);
+}
+
+/** List users with usage in [startTs, endTs) and their total cost_mon (for settlement). */
+export function getStoreUsersWithUsageInRange(
+  startTs: number,
+  endTs: number
+): { user_id: number; wallet_address: string; usage_mon: number }[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT u.id AS user_id, u.wallet_address, COALESCE(SUM(e.cost_mon), 0) AS usage_mon
+     FROM store_users u
+     INNER JOIN store_usage_events e ON u.id = e.user_id
+     WHERE e.created_at >= ? AND e.created_at < ?
+     GROUP BY u.id, u.wallet_address
+     HAVING usage_mon > 0`
+  ).all(startTs, endTs) as { user_id: number; wallet_address: string; usage_mon: number }[];
+  return rows;
+}
+
+/** List usage events (Monallo proxy calls) for a wallet, for History consumption display. */
+export function listStoreUsageEventsByWallet(
+  walletAddress: string,
+  limit = 100
+): { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[] {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  const rows = db.prepare(
+    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.created_at
+     FROM store_usage_events e
+     INNER JOIN store_users u ON u.id = e.user_id
+     WHERE u.wallet_address = ?
+     ORDER BY e.created_at DESC
+     LIMIT ?`
+  ).all(normalized, limit) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[];
+  return rows;
+}
+
+export interface StoreSettlementRow {
+  id: number;
+  user_id: number;
+  wallet_address: string;
+  settlement_date: string;
+  opening_balance: number;
+  usage_mon: number;
+  closing_balance: number;
+  tx_hash: string | null;
+  status: string;
+  unique_id: string;
+  created_at: number;
+}
+
+export function insertStoreSettlement(row: {
+  user_id: number;
+  wallet_address: string;
+  settlement_date: string;
+  opening_balance: number;
+  usage_mon: number;
+  closing_balance: number;
+  tx_hash?: string | null;
+  status: string;
+  unique_id: string;
+}): StoreSettlementRow {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO store_settlements (user_id, wallet_address, settlement_date, opening_balance, usage_mon, closing_balance, tx_hash, status, unique_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    row.user_id,
+    row.wallet_address,
+    row.settlement_date,
+    row.opening_balance,
+    row.usage_mon,
+    row.closing_balance,
+    row.tx_hash ?? null,
+    row.status,
+    row.unique_id,
+    created_at
+  );
+  return db.prepare("SELECT * FROM store_settlements WHERE id = last_insert_rowid()").get() as StoreSettlementRow;
+}
+
+export function getStoreSettlementByUniqueId(uniqueId: string): StoreSettlementRow | null {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM store_settlements WHERE unique_id = ?").get(uniqueId) as StoreSettlementRow | undefined;
+  return row ?? null;
+}
+
+export function isStoreCreditMinted(txHash: string, chainId: number): boolean {
+  const db = getDb();
+  const row = db.prepare("SELECT 1 FROM store_credit_mints WHERE tx_hash = ? AND chain_id = ?").get(txHash, chainId);
+  return !!row;
+}
+
+export function insertStoreCreditMint(row: {
+  tx_hash: string;
+  chain_id: number;
+  wallet_address: string;
+  amount_mon: number;
+}): void {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    "INSERT INTO store_credit_mints (tx_hash, chain_id, wallet_address, amount_mon, created_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(row.tx_hash, row.chain_id, row.wallet_address, row.amount_mon, created_at);
 }
 
 export interface BridgeUnlockRow {

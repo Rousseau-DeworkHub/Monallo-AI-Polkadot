@@ -7,23 +7,23 @@ const SYSTEM_PROMPT = `You are a DeFi intent parser for Monallo AI Pay. Given a 
 
 Output ONLY a single valid JSON object, no markdown, no code block, no explanation. Use this exact structure:
 {
-  "action": "Send" | "Swap" | "Bridge" | "Stake" | "Unknown",
+  "action": "Send" | "Bridge" | "Stake" | "Unknown",
   "sender": "sender address or empty string",
   "receiver": "recipient address or empty string",
   "amount": "numeric amount as string",
   "token": "token symbol e.g. ETH, PAS",
   "source_network": "source chain/network name or empty",
   "target_network": "target chain/network name or empty",
-  "from_token": "for Swap only, source token symbol",
-  "to_token": "for Swap only, destination token symbol"
+  "from_token": "empty string (Swap not supported)",
+  "to_token": "empty string (Swap not supported)"
 }
 
 Rules:
-- action must be one of: Send, Swap, Bridge, Stake, Unknown. Use Unknown if the message is unclear or not a DeFi action.
+- action must be one of: Send, Bridge, Stake, Unknown. Use Unknown if the message is unclear or not a DeFi action.
+- **Polkadot-Hub Swap is under development.** If the user asks to swap or exchange tokens, output action: "Unknown" and leave from_token/to_token empty.
 - For Send/Transfer: extract receiver (0x... or address), amount, token. sender can be empty (current user).
   **Monallo AI Pay Send is restricted by network:** (1) Polkadot Hub supports ONLY PAS for Send. (2) Sepolia supports ONLY ETH for Send.
   Infer network from token: if user says PAS or Polkadot Hub → set source_network and target_network to "Polkadot Hub", token to "PAS". If user says ETH or Sepolia → set source_network and target_network to "Sepolia", token to "ETH".
-- For Swap: extract amount, from_token, to_token. source_network/target_network if mentioned.
 - For Bridge: extract amount, token, source_network, target_network, receiver if mentioned.
   **Bridge direction (lock vs unlock):**
   - "Bridge X ETH to Polkadot Hub" or "Bridge X ETH to Polkadot" = lock: source_network = "Sepolia", target_network = "Polkadot Hub", token = "ETH".
@@ -44,6 +44,13 @@ export interface ParsedIntent {
   target_network: string;
   from_token: string;
   to_token: string;
+}
+
+/** LLM token consumption (MiniMax / OpenAI-style usage) */
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
 
 function extractJson(text: string): ParsedIntent | null {
@@ -67,7 +74,7 @@ function extractJson(text: string): ParsedIntent | null {
   try {
     const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
     const action = String(parsed.action ?? "Unknown").trim();
-    const validActions = ["Send", "Swap", "Bridge", "Stake", "Unknown"];
+    const validActions = ["Send", "Bridge", "Stake", "Unknown"];
     const actionNorm = validActions.includes(action) ? action : "Unknown";
     return {
       action: actionNorm,
@@ -131,6 +138,7 @@ export async function POST(request: NextRequest) {
     let data: {
       choices?: Array<{ message?: { content?: string } }>;
       base_resp?: { status_code?: number; status_msg?: string };
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
     try {
       data = (await res.json()) as typeof data;
@@ -158,7 +166,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return NextResponse.json(parsed);
+    const promptTokens = Number(data.usage?.prompt_tokens ?? 0);
+    const completionTokens = Number(data.usage?.completion_tokens ?? 0);
+    const usage: TokenUsage | undefined = data.usage
+      ? {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: Number(data.usage.total_tokens) || promptTokens + completionTokens,
+        }
+      : undefined;
+
+    return NextResponse.json(
+      usage ? { ...parsed, usage } : parsed
+    );
   } catch (e) {
     console.error("parse-intent error", e);
     return NextResponse.json(

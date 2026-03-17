@@ -2,7 +2,7 @@ import { Metadata } from "next";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowLeft, Sparkles, Wallet, Layers, Video, Cpu, Globe, Shield, Activity, GitBranch } from "lucide-react";
+import { ArrowLeft, Sparkles, Wallet, Layers, Cpu, Globe, Shield, Activity, GitBranch } from "lucide-react";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 export const metadata: Metadata = {
@@ -98,20 +98,6 @@ export default function DocsPage() {
                 </p>
               </div>
 
-              <div className="p-6 rounded-2xl bg-[#111] border border-white/5 opacity-70">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#B45AFF] to-[#FF4D9E] flex items-center justify-center">
-                    <Video className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold">Monallo Video</h3>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-[#9945FF]/20 text-[#9945FF]">Coming Soon</span>
-                  </div>
-                </div>
-                <p className="text-gray-400 leading-relaxed">
-                  AI-powered video generation platform for creating Web3-related content.
-                </p>
-              </div>
             </div>
           </section>
 
@@ -342,7 +328,7 @@ export default function DocsPage() {
                   <h3 className="text-xl font-bold">Growth</h3>
                 </div>
                 <ul className="space-y-2 text-gray-400">
-                  <li>○ Monallo Video</li>
+                  <li>○ LLM Token Store</li>
                   <li>○ NFT Marketplace</li>
                   <li>○ DAO Governance</li>
                 </ul>
