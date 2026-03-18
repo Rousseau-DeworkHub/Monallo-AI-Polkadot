@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listStorePurchases, insertStorePurchase, getOrCreateStoreUser, addStoreModelTokens, setStoreModelTokens, updateStorePurchaseModelId } from "@/lib/db";
+import { listStorePurchases, insertStorePurchase, getOrCreateStoreUser, addStoreModelTokens, setStoreModelTokens, updateStorePurchaseModelId, hasStoreTokenBalancesByUserId } from "@/lib/db";
 import { ethers } from "ethers";
 
 export async function GET(request: NextRequest) {
@@ -37,8 +37,13 @@ export async function GET(request: NextRequest) {
         tokenSums[mid] = (tokenSums[mid] ?? 0) + Number(r.token_count);
       }
     }
-    for (const [mid, sum] of Object.entries(tokenSums)) {
-      try { setStoreModelTokens(user.id, mid, sum); } catch (_) {}
+    // Important: do NOT overwrite existing token balances that have been decremented by usage.
+    // Only rebuild when token balance rows do not exist yet (e.g. fresh DB / legacy migration).
+    const hasTokens = hasStoreTokenBalancesByUserId(user.id);
+    if (!hasTokens) {
+      for (const [mid, sum] of Object.entries(tokenSums)) {
+        try { setStoreModelTokens(user.id, mid, sum); } catch (_) {}
+      }
     }
     return NextResponse.json(rows);
   } catch (e) {

@@ -74,9 +74,6 @@ const TokenLogos: Record<string, string> = {
   PAS: "https://www.okx.com/cdn/oksupport/asset/currency/icon/dot.png",
 };
 
-const STORE_BALANCE_KEY = "monallo_store_balance";
-const STORE_RECHARGE_KEY = "monallo_store_recharge_mon";
-
 /** Recharge MON presets (1 USD = 1 MON) */
 const RECHARGE_PRESETS_MON = [1, 6, 18, 68, 128, 328] as const;
 const STORE_HISTORY_KEY = "monallo_store_history";
@@ -100,13 +97,6 @@ const EXPLORER_BY_CHAIN_ID: Record<number, string> = {
   [11155111]: "https://sepolia.etherscan.io",
   [420420417]: "https://blockscout-testnet.polkadot.io",
 };
-
-function getBalanceKey(address: string) {
-  return `${STORE_BALANCE_KEY}_${(address || "").toLowerCase()}`;
-}
-function getRechargeKey(address: string) {
-  return `${STORE_RECHARGE_KEY}_${(address || "").toLowerCase()}`;
-}
 
 /** Map raw payment/transaction errors to user-friendly modal message */
 function getPaymentErrorMessage(e: unknown): string {
@@ -1134,12 +1124,13 @@ export default function StorePage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data) return;
-        if (typeof data.balance_mon === "number") setChainBalanceMon(data.balance_mon);
+        if (typeof data.balance_mon === "number") {
+          setChainBalanceMon(data.balance_mon);
+          // Keep an in-memory mirror for optimistic UI, but do not persist it in localStorage.
+          setRechargeBalanceMon(data.balance_mon);
+        }
         if (data.balance_by_model && typeof data.balance_by_model === "object" && !Array.isArray(data.balance_by_model)) {
           setBalanceByModel(data.balance_by_model as Record<string, number>);
-          if (typeof window !== "undefined" && address) {
-            localStorage.setItem(getBalanceKey(address), JSON.stringify(data.balance_by_model));
-          }
         }
       })
       .catch(() => setChainBalanceMon(null));
@@ -1214,39 +1205,6 @@ export default function StorePage() {
   }, [showHistoryModal, address, fetchPurchaseHistory, fetchConsumptionHistory]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !address) return;
-    try {
-      const raw = localStorage.getItem(getBalanceKey(address));
-      if (raw) {
-        const parsed = JSON.parse(raw) as Record<string, number>;
-        if (parsed && typeof parsed === "object") {
-          // Backward-compat: migrate old model ids to new ones.
-          const next: Record<string, number> = { ...parsed };
-          if (next["minimax-m2.5"] != null && next["MiniMax-M2.5"] == null) {
-            next["MiniMax-M2.5"] = next["minimax-m2.5"];
-            delete next["minimax-m2.5"];
-          }
-          if (next["gemini-3.1"] != null && next["gemini-3.1-pro-preview"] == null) {
-            next["gemini-3.1-pro-preview"] = next["gemini-3.1"];
-            delete next["gemini-3.1"];
-          }
-          setBalanceByModel(next);
-          localStorage.setItem(getBalanceKey(address), JSON.stringify(next));
-        }
-      }
-    } catch (_) {}
-  }, [address]);
-  useEffect(() => {
-    if (typeof window === "undefined" || !address) return;
-    try {
-      const raw = localStorage.getItem(getRechargeKey(address));
-      if (raw != null) {
-        const n = parseFloat(String(raw));
-        if (Number.isFinite(n) && n >= 0) setRechargeBalanceMon(n);
-      }
-    } catch (_) {}
-  }, [address]);
-  useEffect(() => {
     if (typeof window === "undefined") return;
     if (!address) {
       setApiKey(null);
@@ -1274,11 +1232,9 @@ export default function StorePage() {
 
   const saveBalance = (next: Record<string, number>) => {
     setBalanceByModel(next);
-    if (address && typeof window !== "undefined") localStorage.setItem(getBalanceKey(address), JSON.stringify(next));
   };
   const saveRechargeMon = (mon: number) => {
     setRechargeBalanceMon(mon);
-    if (address && typeof window !== "undefined") localStorage.setItem(getRechargeKey(address), String(mon));
   };
   const handleRegenerateApiKey = () => {
     const newKey = generateApiKey();

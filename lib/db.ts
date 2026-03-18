@@ -436,6 +436,17 @@ export function getStoreAllTokenBalancesByUserId(userId: number): Record<string,
   return out;
 }
 
+/** Whether the user already has any token balance rows in DB.
+ * Note: check row existence rather than tokens>0, because tokens can be 0 after consumption.
+ */
+export function hasStoreTokenBalancesByUserId(userId: number): boolean {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT COUNT(1) as cnt FROM store_token_balances WHERE user_id = ?"
+  ).get(userId) as { cnt: number };
+  return Number(row?.cnt ?? 0) > 0;
+}
+
 export function spendStoreModelTokens(userId: number, modelId: string, spendTokens: number): number {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
