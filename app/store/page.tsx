@@ -1440,7 +1440,7 @@ export default function StorePage() {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/70" onClick={() => setShowComingSoonModal(false)} />
             <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative rounded-2xl bg-[#0d0d14] border border-white/10 px-6 py-5 shadow-xl">
-              <p className="text-white font-medium">正在接入</p>
+              <p className="text-white font-medium">Integrating…</p>
               <p className="text-sm text-gray-400 mt-1">Coming soon.</p>
               <button onClick={() => setShowComingSoonModal(false)} className="mt-4 w-full py-2 rounded-xl bg-[#F68521]/20 text-[#F68521] font-medium">OK</button>
             </motion.div>

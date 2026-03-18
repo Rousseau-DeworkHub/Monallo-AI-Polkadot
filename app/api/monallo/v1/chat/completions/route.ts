@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { ethers } from "ethers";
-import { getStoreUserByKeyHash, insertStoreUsageEvent, getStoreUsageSumByUserAndRange, spendStoreModelTokens, getStoreModelTokens } from "@/lib/db";
-import { getCostMonFromUsage } from "@/lib/monalloProxy";
+import { getStoreUserByKeyHash, insertStoreUsageEvent, getStoreUsageSumByUserAndRange, spendStoreModelTokens } from "@/lib/db";
+import { getCostMonFromUsage, normalizeModelIdForBalance } from "@/lib/monalloProxy";
 import { getCreditBalance } from "@/lib/creditLedger";
 
 const HAODE_BASE_URL = process.env.HAODE_BASE_URL ?? "";
@@ -20,6 +20,52 @@ function getAuthKey(request: NextRequest): string | null {
   const auth = request.headers.get("authorization");
   if (!auth?.startsWith("Bearer ")) return null;
   return auth.slice(7).trim();
+}
+
+type UsageTriple = { prompt: number; completion: number; total: number };
+
+function parseUsage(data: { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }): UsageTriple | null {
+  const u = data?.usage;
+  if (!u) return null;
+  const prompt = Number(u.prompt_tokens ?? 0);
+  const completion = Number(u.completion_tokens ?? 0);
+  const totalFromFields = prompt + completion;
+  const totalTokens = Number(u.total_tokens ?? 0) || totalFromFields;
+  if (totalTokens <= 0) return null;
+  if (prompt > 0 || completion > 0) {
+    return { prompt, completion, total: prompt + completion };
+  }
+  return { prompt: totalTokens, completion: 0, total: totalTokens };
+}
+
+function applyChargeAndInsert(
+  user: { id: number },
+  model: string,
+  modelForBalance: string,
+  prompt: number,
+  completion: number,
+): void {
+  const totalTokens = Math.max(0, prompt + completion);
+  if (totalTokens <= 0) return;
+  const costMon = getCostMonFromUsage(model, prompt, completion);
+  const chargedTokens = spendStoreModelTokens(user.id, modelForBalance, totalTokens);
+  const coverPrompt = Math.min(prompt, chargedTokens);
+  const coverCompletion = Math.min(completion, Math.max(0, chargedTokens - coverPrompt));
+  const remainingPrompt = Math.max(0, prompt - coverPrompt);
+  const remainingCompletion = Math.max(0, completion - coverCompletion);
+  let chargedMon = (totalTokens - chargedTokens) > 0 ? getCostMonFromUsage(model, remainingPrompt, remainingCompletion) : 0;
+  if (chargedMon <= 0 && costMon > 0 && chargedTokens < totalTokens) chargedMon = costMon;
+  const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
+  insertStoreUsageEvent({
+    user_id: user.id,
+    model,
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    cost_mon: costMon,
+    charged_tokens: chargedTokens,
+    charged_mon: chargedMon,
+    charge_method: method,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -60,6 +106,7 @@ export async function POST(request: NextRequest) {
   const obj = body as Record<string, unknown>;
   const stream = !!obj.stream;
   const model = typeof obj.model === "string" ? obj.model : "default";
+  const modelForBalance = normalizeModelIdForBalance(model);
   const url = HAODE_BASE_URL.replace(/\/$/, "") + "/v1/chat/completions";
 
   const headers: Record<string, string> = {
@@ -126,6 +173,7 @@ export async function POST(request: NextRequest) {
       if (!body) return NextResponse.json({ error: "No body" }, { status: 502 });
       const reader = body.getReader();
       let lastLine = "";
+      let lastUsage: UsageTriple | null = null;
       const streamResponse = new ReadableStream({
         async start(controller) {
           const decoder = new TextDecoder();
@@ -139,63 +187,22 @@ export async function POST(request: NextRequest) {
             for (const line of lines) {
               if (line.startsWith("data: ") && line !== "data: [DONE]") {
                 try {
-                  const json = JSON.parse(line.slice(6)) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
-                  if (json.usage?.prompt_tokens != null && json.usage?.completion_tokens != null) {
-                    const prompt = json.usage.prompt_tokens;
-                    const completion = json.usage.completion_tokens;
-                    const totalTokens = Math.max(0, Number(prompt) + Number(completion));
-                    const available = getStoreModelTokens(user.id, model);
-                    const chargedTokens = spendStoreModelTokens(user.id, model, totalTokens);
-                    const remaining = Math.max(0, totalTokens - chargedTokens);
-                    const coverPrompt = Math.min(Number(prompt), chargedTokens);
-                    const coverCompletion = Math.min(Number(completion), Math.max(0, chargedTokens - coverPrompt));
-                    const remainingPrompt = Math.max(0, Number(prompt) - coverPrompt);
-                    const remainingCompletion = Math.max(0, Number(completion) - coverCompletion);
-                    const costMon = getCostMonFromUsage(model, Number(prompt), Number(completion));
-                    const chargedMon = remaining > 0 ? getCostMonFromUsage(model, remainingPrompt, remainingCompletion) : 0;
-                    const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
-                    insertStoreUsageEvent({
-                      user_id: user.id,
-                      model,
-                      prompt_tokens: Number(prompt),
-                      completion_tokens: Number(completion),
-                      cost_mon: costMon,
-                      charged_tokens: chargedTokens,
-                      charged_mon: chargedMon,
-                      charge_method: method,
-                    });
-                  }
+                  const json = JSON.parse(line.slice(6)) as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+                  const u = parseUsage(json);
+                  if (u) lastUsage = u;
                 } catch (_) {}
               }
             }
           }
           if (lastLine.startsWith("data: ") && lastLine !== "data: [DONE]") {
             try {
-              const json = JSON.parse(lastLine.slice(6)) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
-              if (json.usage?.prompt_tokens != null && json.usage?.completion_tokens != null) {
-                const prompt = json.usage.prompt_tokens;
-                const completion = json.usage.completion_tokens;
-                const totalTokens = Math.max(0, Number(prompt) + Number(completion));
-                const chargedTokens = spendStoreModelTokens(user.id, model, totalTokens);
-                const coverPrompt = Math.min(Number(prompt), chargedTokens);
-                const coverCompletion = Math.min(Number(completion), Math.max(0, chargedTokens - coverPrompt));
-                const remainingPrompt = Math.max(0, Number(prompt) - coverPrompt);
-                const remainingCompletion = Math.max(0, Number(completion) - coverCompletion);
-                const costMon = getCostMonFromUsage(model, Number(prompt), Number(completion));
-                const chargedMon = (totalTokens - chargedTokens) > 0 ? getCostMonFromUsage(model, remainingPrompt, remainingCompletion) : 0;
-                const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
-                insertStoreUsageEvent({
-                  user_id: user.id,
-                  model,
-                  prompt_tokens: Number(prompt),
-                  completion_tokens: Number(completion),
-                  cost_mon: costMon,
-                  charged_tokens: chargedTokens,
-                  charged_mon: chargedMon,
-                  charge_method: method,
-                });
-              }
+              const json = JSON.parse(lastLine.slice(6)) as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+              const u = parseUsage(json);
+              if (u) lastUsage = u;
             } catch (_) {}
+          }
+          if (lastUsage) {
+            applyChargeAndInsert(user, model, modelForBalance, lastUsage.prompt, lastUsage.completion);
           }
           controller.close();
         },
@@ -209,33 +216,10 @@ export async function POST(request: NextRequest) {
       return new Response(streamResponse, { headers: streamHeaders });
     }
 
-    const data = (await res.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number }; [k: string]: unknown };
-    if (data.usage?.prompt_tokens != null && data.usage?.completion_tokens != null) {
-      const costMon = getCostMonFromUsage(
-        model,
-        data.usage.prompt_tokens,
-        data.usage.completion_tokens
-      );
-      const prompt = Number(data.usage.prompt_tokens);
-      const completion = Number(data.usage.completion_tokens);
-      const totalTokens = Math.max(0, prompt + completion);
-      const chargedTokens = spendStoreModelTokens(user.id, model, totalTokens);
-      const coverPrompt = Math.min(prompt, chargedTokens);
-      const coverCompletion = Math.min(completion, Math.max(0, chargedTokens - coverPrompt));
-      const remainingPrompt = Math.max(0, prompt - coverPrompt);
-      const remainingCompletion = Math.max(0, completion - coverCompletion);
-      const chargedMon = (totalTokens - chargedTokens) > 0 ? getCostMonFromUsage(model, remainingPrompt, remainingCompletion) : 0;
-      const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
-      insertStoreUsageEvent({
-        user_id: user.id,
-        model,
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-        cost_mon: costMon,
-        charged_tokens: chargedTokens,
-        charged_mon: chargedMon,
-        charge_method: method,
-      });
+    const data = (await res.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; [k: string]: unknown };
+    const usageTriple = parseUsage(data as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } });
+    if (usageTriple) {
+      applyChargeAndInsert(user, model, modelForBalance, usageTriple.prompt, usageTriple.completion);
     }
     const jsonHeaders = new Headers();
     if (lowBalanceWarning) jsonHeaders.set("X-Monallo-Warning", lowBalanceWarning);

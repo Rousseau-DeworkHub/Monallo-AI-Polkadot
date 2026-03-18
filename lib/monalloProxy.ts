@@ -20,3 +20,16 @@ function getPriceUsdPer1M(model: string): { prompt: number; completion: number }
   if (m.includes("gemini")) return { prompt: 12, completion: 72 };
   return { prompt: 10, completion: 40 };
 }
+
+/**
+ * Normalize request model to canonical id used in store_token_balances so that
+ * "GPT-5.2" / "gpt-5.2" match the same balance as "gpt-5.2", etc.
+ */
+export function normalizeModelIdForBalance(model: string): string {
+  if (!model || typeof model !== "string") return model || "default";
+  const m = model.trim().toLowerCase();
+  if (m.includes("gpt-5") || m === "gpt-5.2") return "gpt-5.2";
+  if ((m.includes("minimax") && m.includes("m2")) || m.includes("m2.5")) return "MiniMax-M2.5";
+  if (m.includes("gemini") && (m.includes("3.1") || m.includes("pro"))) return "gemini-3.1-pro-preview";
+  return model.trim();
+}
