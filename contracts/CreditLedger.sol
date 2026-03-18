@@ -59,24 +59,15 @@ contract CreditLedger {
     }
 
     /**
-     * @dev User sends native token (e.g. PAS) and receives MON credit. Contract holds the funds; owner can withdraw.
+     * @dev Disabled. MON is minted only by operator after off-chain payment verification.
+     *      This prevents users from bypassing Monallo's official checkout to mint at an arbitrary exchange rate.
      */
     function recharge() external payable {
-        require(msg.value > 0, "Zero value");
-        uint256 amountMon = (msg.value * rateNum) / rateDenom;
-        require(amountMon > 0, "Amount too small");
-        creditOf[msg.sender] += amountMon;
-        emit Minted(msg.sender, amountMon);
-        emit Recharged(msg.sender, msg.value, amountMon);
+        revert("Recharge disabled");
     }
 
     receive() external payable {
-        require(msg.value > 0, "Zero value");
-        uint256 amountMon = (msg.value * rateNum) / rateDenom;
-        require(amountMon > 0, "Amount too small");
-        creditOf[msg.sender] += amountMon;
-        emit Minted(msg.sender, amountMon);
-        emit Recharged(msg.sender, msg.value, amountMon);
+        revert("Direct transfer disabled");
     }
 
     function withdraw() external onlyOwner {

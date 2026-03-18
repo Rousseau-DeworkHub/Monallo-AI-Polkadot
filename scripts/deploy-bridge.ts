@@ -7,7 +7,11 @@
 import { network } from "hardhat";
 
 async function main() {
-  const { ethers, networkName } = await network.connect();
+  // Hardhat 3 typing may not expose ethers on connect() return in TS.
+  const { ethers, networkName } = (await (network as unknown as { connect: () => Promise<any> }).connect()) as {
+    ethers: any;
+    networkName: string;
+  };
   const signers = await ethers.getSigners();
   const deployer = signers[0];
   const relayer = deployer.address;

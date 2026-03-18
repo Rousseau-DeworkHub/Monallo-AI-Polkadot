@@ -66,6 +66,8 @@ function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS store_purchases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       wallet_address TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'package',
+      model_id TEXT,
       model_name TEXT NOT NULL,
       token_count INTEGER NOT NULL,
       amount TEXT NOT NULL,
@@ -97,6 +99,11 @@ function getDb(): Database.Database {
       FOREIGN KEY (user_id) REFERENCES store_users(id)
     );
     CREATE INDEX IF NOT EXISTS idx_store_api_keys_user ON store_api_keys(user_id);
+    CREATE TABLE IF NOT EXISTS store_api_key_nonces (
+      wallet_address TEXT NOT NULL PRIMARY KEY,
+      nonce TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS store_usage_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -104,10 +111,22 @@ function getDb(): Database.Database {
       prompt_tokens INTEGER NOT NULL DEFAULT 0,
       completion_tokens INTEGER NOT NULL DEFAULT 0,
       cost_mon INTEGER NOT NULL DEFAULT 0,
+      charged_tokens INTEGER NOT NULL DEFAULT 0,
+      charged_mon INTEGER NOT NULL DEFAULT 0,
+      charge_method TEXT NOT NULL DEFAULT 'mon',
       created_at INTEGER NOT NULL,
       FOREIGN KEY (user_id) REFERENCES store_users(id)
     );
     CREATE INDEX IF NOT EXISTS idx_store_usage_user_created ON store_usage_events(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS store_token_balances (
+      user_id INTEGER NOT NULL,
+      model_id TEXT NOT NULL,
+      tokens INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, model_id),
+      FOREIGN KEY (user_id) REFERENCES store_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_token_balances_user ON store_token_balances(user_id);
     CREATE TABLE IF NOT EXISTS store_settlements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -134,12 +153,23 @@ function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_store_credit_mints_tx ON store_credit_mints(tx_hash, chain_id);
   `);
+  // Migrations for existing DBs (SQLite only supports ADD COLUMN)
+  try { db.exec("ALTER TABLE store_purchases ADD COLUMN kind TEXT NOT NULL DEFAULT 'package'"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_purchases ADD COLUMN model_id TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_api_keys ADD COLUMN encrypted_key TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_api_keys ADD COLUMN key_prefix TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_api_keys ADD COLUMN key_last4 TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charged_tokens INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charged_mon INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charge_method TEXT NOT NULL DEFAULT 'mon'"); } catch (_) {}
   return db;
 }
 
 export interface StorePurchaseRow {
   id: number;
   wallet_address: string;
+  kind: string;
+  model_id: string | null;
   model_name: string;
   token_count: number;
   amount: string;
@@ -152,6 +182,8 @@ export interface StorePurchaseRow {
 
 export function insertStorePurchase(row: {
   wallet_address: string;
+  kind?: "package" | "recharge";
+  model_id?: string | null;
   model_name: string;
   token_count: number;
   amount: string;
@@ -163,10 +195,12 @@ export function insertStorePurchase(row: {
   const db = getDb();
   const created_at = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO store_purchases (wallet_address, model_name, token_count, amount, token, amount_usd, tx_hash, chain_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO store_purchases (wallet_address, kind, model_id, model_name, token_count, amount, token, amount_usd, tx_hash, chain_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     row.wallet_address,
+    row.kind ?? "package",
+    row.model_id ?? null,
     row.model_name,
     row.token_count,
     row.amount,
@@ -185,6 +219,23 @@ export function listStorePurchases(walletAddress: string, limit = 100): StorePur
     "SELECT * FROM store_purchases WHERE wallet_address = ? ORDER BY created_at DESC LIMIT ?"
   );
   return stmt.all(walletAddress, limit) as StorePurchaseRow[];
+}
+
+export function updateStorePurchaseModelId(purchaseId: number, modelId: string): void {
+  const db = getDb();
+  db.prepare("UPDATE store_purchases SET model_id = ? WHERE id = ?").run(modelId, purchaseId);
+}
+
+export function setStoreModelTokens(userId: number, modelId: string, tokens: number): void {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const t = Math.max(0, Math.floor(tokens));
+  if (!modelId) return;
+  db.prepare(
+    `INSERT INTO store_token_balances (user_id, model_id, tokens, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, model_id) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at`
+  ).run(userId, modelId, t, now);
 }
 
 export interface StoreConsumptionRow {
@@ -249,6 +300,71 @@ export function insertStoreApiKey(userId: number, keyHash: string): void {
   db.prepare("INSERT INTO store_api_keys (user_id, key_hash, created_at) VALUES (?, ?, ?)").run(userId, keyHash, created_at);
 }
 
+export function insertStoreApiKeyEncrypted(row: {
+  user_id: number;
+  key_hash: string;
+  encrypted_key: string;
+  key_prefix: string;
+  key_last4: string;
+}): void {
+  const db = getDb();
+  const created_at = Math.floor(Date.now() / 1000);
+  db.prepare(
+    "INSERT INTO store_api_keys (user_id, key_hash, encrypted_key, key_prefix, key_last4, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(row.user_id, row.key_hash, row.encrypted_key, row.key_prefix, row.key_last4, created_at);
+}
+
+export function getLatestStoreApiKeyMetaByWallet(walletAddress: string): { key_prefix: string; key_last4: string; has_encrypted: boolean } | null {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  const row = db.prepare(
+    `SELECT k.key_prefix, k.key_last4, (k.encrypted_key IS NOT NULL) AS has_encrypted
+     FROM store_api_keys k
+     INNER JOIN store_users u ON u.id = k.user_id
+     WHERE u.wallet_address = ?
+     ORDER BY k.created_at DESC, k.id DESC
+     LIMIT 1`
+  ).get(normalized) as { key_prefix: string | null; key_last4: string | null; has_encrypted: 0 | 1 } | undefined;
+  if (!row || !row.key_prefix || !row.key_last4) return null;
+  return { key_prefix: row.key_prefix, key_last4: row.key_last4, has_encrypted: !!row.has_encrypted };
+}
+
+export function getLatestStoreApiKeyEncryptedByWallet(walletAddress: string): { encrypted_key: string } | null {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  const row = db.prepare(
+    `SELECT k.encrypted_key
+     FROM store_api_keys k
+     INNER JOIN store_users u ON u.id = k.user_id
+     WHERE u.wallet_address = ? AND k.encrypted_key IS NOT NULL
+     ORDER BY k.created_at DESC, k.id DESC
+     LIMIT 1`
+  ).get(normalized) as { encrypted_key: string } | undefined;
+  return row ?? null;
+}
+
+export function upsertStoreApiKeyNonce(walletAddress: string, nonce: string, expiresAt: number): void {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  db.prepare(
+    `INSERT INTO store_api_key_nonces (wallet_address, nonce, expires_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(wallet_address) DO UPDATE SET nonce = excluded.nonce, expires_at = excluded.expires_at`
+  ).run(normalized, nonce, expiresAt);
+}
+
+export function consumeStoreApiKeyNonce(walletAddress: string, nonce: string): boolean {
+  const db = getDb();
+  const normalized = walletAddress.trim().toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare("SELECT nonce, expires_at FROM store_api_key_nonces WHERE wallet_address = ?").get(normalized) as { nonce: string; expires_at: number } | undefined;
+  if (!row) return false;
+  if (row.expires_at < now) return false;
+  if (row.nonce !== nonce) return false;
+  db.prepare("DELETE FROM store_api_key_nonces WHERE wallet_address = ?").run(normalized);
+  return true;
+}
+
 export function getStoreUserByKeyHash(keyHash: string): StoreUserRow | null {
   const db = getDb();
   const row = db.prepare(
@@ -263,19 +379,68 @@ export function insertStoreUsageEvent(row: {
   prompt_tokens: number;
   completion_tokens: number;
   cost_mon: number;
+  charged_tokens?: number;
+  charged_mon?: number;
+  charge_method?: "token" | "mon" | "mixed";
 }): void {
   const db = getDb();
   const created_at = Math.floor(Date.now() / 1000);
   db.prepare(
-    "INSERT INTO store_usage_events (user_id, model, prompt_tokens, completion_tokens, cost_mon, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(row.user_id, row.model, row.prompt_tokens, row.completion_tokens, row.cost_mon, created_at);
+    "INSERT INTO store_usage_events (user_id, model, prompt_tokens, completion_tokens, cost_mon, charged_tokens, charged_mon, charge_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    row.user_id,
+    row.model,
+    row.prompt_tokens,
+    row.completion_tokens,
+    row.cost_mon,
+    row.charged_tokens ?? 0,
+    row.charged_mon ?? row.cost_mon,
+    row.charge_method ?? "mon",
+    created_at
+  );
+}
+
+export function addStoreModelTokens(userId: number, modelId: string, deltaTokens: number): void {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const d = Math.max(0, Math.floor(deltaTokens));
+  if (!modelId || d <= 0) return;
+  db.prepare(
+    `INSERT INTO store_token_balances (user_id, model_id, tokens, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, model_id) DO UPDATE SET tokens = tokens + excluded.tokens, updated_at = excluded.updated_at`
+  ).run(userId, modelId, d, now);
+}
+
+export function getStoreModelTokens(userId: number, modelId: string): number {
+  const db = getDb();
+  const row = db.prepare(
+    "SELECT tokens FROM store_token_balances WHERE user_id = ? AND model_id = ?"
+  ).get(userId, modelId) as { tokens: number } | undefined;
+  return Math.max(0, Number(row?.tokens ?? 0));
+}
+
+export function spendStoreModelTokens(userId: number, modelId: string, spendTokens: number): number {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const s = Math.max(0, Math.floor(spendTokens));
+  if (!modelId || s <= 0) return 0;
+  const cur = getStoreModelTokens(userId, modelId);
+  const spent = Math.min(cur, s);
+  const next = cur - spent;
+  db.prepare(
+    `INSERT INTO store_token_balances (user_id, model_id, tokens, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, model_id) DO UPDATE SET tokens = excluded.tokens, updated_at = excluded.updated_at`
+  ).run(userId, modelId, next, now);
+  return spent;
 }
 
 /** Sum cost_mon for a user in [startTs, endTs) (Unix seconds). */
 export function getStoreUsageSumByUserAndRange(userId: number, startTs: number, endTs: number): number {
   const db = getDb();
   const row = db.prepare(
-    "SELECT COALESCE(SUM(cost_mon), 0) as total FROM store_usage_events WHERE user_id = ? AND created_at >= ? AND created_at < ?"
+    "SELECT COALESCE(SUM(charged_mon), 0) as total FROM store_usage_events WHERE user_id = ? AND created_at >= ? AND created_at < ?"
   ).get(userId, startTs, endTs) as { total: number };
   return Number(row?.total ?? 0);
 }
@@ -287,7 +452,7 @@ export function getStoreUsersWithUsageInRange(
 ): { user_id: number; wallet_address: string; usage_mon: number }[] {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT u.id AS user_id, u.wallet_address, COALESCE(SUM(e.cost_mon), 0) AS usage_mon
+    `SELECT u.id AS user_id, u.wallet_address, COALESCE(SUM(e.charged_mon), 0) AS usage_mon
      FROM store_users u
      INNER JOIN store_usage_events e ON u.id = e.user_id
      WHERE e.created_at >= ? AND e.created_at < ?
@@ -301,17 +466,17 @@ export function getStoreUsersWithUsageInRange(
 export function listStoreUsageEventsByWallet(
   walletAddress: string,
   limit = 100
-): { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[] {
+): { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[] {
   const db = getDb();
   const normalized = walletAddress.trim().toLowerCase();
   const rows = db.prepare(
-    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.created_at
+    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.charged_tokens, e.charged_mon, e.charge_method, e.created_at
      FROM store_usage_events e
      INNER JOIN store_users u ON u.id = e.user_id
      WHERE u.wallet_address = ?
      ORDER BY e.created_at DESC
      LIMIT ?`
-  ).all(normalized, limit) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[];
+  ).all(normalized, limit) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
   return rows;
 }
 

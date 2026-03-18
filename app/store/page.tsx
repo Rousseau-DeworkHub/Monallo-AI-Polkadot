@@ -7,8 +7,9 @@ import { ChevronLeft, Store, Wallet, Loader2, Globe, X, CheckCircle2, Sparkles, 
 import { useWallet, formatAddress, SUPPORTED_CHAINS, ChainInfo, WalletType, isMetaMaskAvailable } from "@/hooks/useWallet";
 import { fetchTokenPrices } from "@/lib/balances";
 import { sendViaWallet } from "@/lib/sendTransaction";
-import { rechargeViaContract } from "@/lib/creditLedger";
 import { ethers } from "ethers";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const CREDIT_LEDGER_ADDRESS = typeof process.env.NEXT_PUBLIC_CREDIT_LEDGER_ADDRESS === "string" ? process.env.NEXT_PUBLIC_CREDIT_LEDGER_ADDRESS.trim() : "";
 
@@ -31,8 +32,8 @@ interface LLMModelInfo {
 
 const LLM_MODELS: LLMModelInfo[] = [
   { id: "gpt-5.2", name: "GPT-5.2", provider: "OpenAI", description: "Latest flagship model", price1M: 47.25, promptPer1M: 5.25, completionPer1M: 42 },
-  { id: "minimax-m2.5", name: "MiniMax M2.5", provider: "MiniMax", description: "Strong reasoning & code", price1M: 31.5, promptPer1M: 6.3, completionPer1M: 25.2 },
-  { id: "gemini-3.1", name: "Gemini 3.1 Pro", provider: "Google", description: "Multimodal & long context", price1M: 84, promptPer1M: 12, completionPer1M: 72 },
+  { id: "MiniMax-M2.5", name: "MiniMax M2.5", provider: "MiniMax", description: "Strong reasoning & code", price1M: 31.5, promptPer1M: 6.3, completionPer1M: 25.2 },
+  { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", provider: "Google", description: "Multimodal & long context", price1M: 84, promptPer1M: 12, completionPer1M: 72 },
   { id: "qwen-3.5", name: "Qwen 3.5", provider: "Alibaba", description: "Efficient & capable", comingSoon: true },
   { id: "seed-1.8", name: "Seed 1.8", provider: "Doubao", description: "Fast inference", comingSoon: true },
 ];
@@ -75,7 +76,6 @@ const TokenLogos: Record<string, string> = {
 
 const STORE_BALANCE_KEY = "monallo_store_balance";
 const STORE_RECHARGE_KEY = "monallo_store_recharge_mon";
-const STORE_APIKEY_KEY = "monallo_store_apikey";
 
 /** Recharge MON presets (1 USD = 1 MON) */
 const RECHARGE_PRESETS_MON = [1, 6, 18, 68, 128, 328] as const;
@@ -86,6 +86,7 @@ const HISTORY_DISPLAY = 5;
 export interface PurchaseRecord {
   id: string;
   timestamp: number;
+  kind: "package" | "recharge";
   modelName: string;
   tokenCount: number;
   amount: string;
@@ -126,9 +127,7 @@ function getPaymentErrorMessage(e: unknown): string {
 function getHistoryKey(address: string) {
   return `${STORE_HISTORY_KEY}_${(address || "").toLowerCase()}`;
 }
-function getApiKeyStorageKey(address: string) {
-  return `${STORE_APIKEY_KEY}_${(address || "").toLowerCase()}`;
-}
+// API key is stored server-side (DB). Client should not persist plaintext keys in localStorage.
 
 function generateApiKey(): string {
   const prefix = "ms_live_";
@@ -322,26 +321,57 @@ function ApiKeyModal({
   isOpen,
   onClose,
   apiKey,
+  apiKeyMasked,
+  apiKeyHasServer,
+  apiKeyLoading,
+  models,
+  balanceByModel,
+  monBalance,
+  onSpendModelTokens,
+  onSpendMon,
   onCopy,
   onRegenerate,
+  onRevealFromServer,
 }: {
   isOpen: boolean;
   onClose: () => void;
   apiKey: string | null;
+  apiKeyMasked: string | null;
+  apiKeyHasServer: boolean;
+  apiKeyLoading: boolean;
+  models: LLMModelInfo[];
+  balanceByModel: Record<string, number>;
+  monBalance: number;
+  onSpendModelTokens: (modelId: string, spentTokens: number) => void;
+  onSpendMon: (spentMon: number) => void;
   onCopy: () => void;
   onRegenerate: () => void;
+  onRevealFromServer: () => Promise<string | null>;
 }) {
   const [copied, setCopied] = useState(false);
   const [baseUrlCopied, setBaseUrlCopied] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
-  const [testModel, setTestModel] = useState("gpt-5.2");
   const [testPrompt, setTestPrompt] = useState("Say this is a test!");
   const [testLoading, setTestLoading] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; status: number; text: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; title: string; details?: string } | null>(null);
+  const [codeTab, setCodeTab] = useState<"curl" | "js" | "py">("curl");
+  const [codeCopied, setCodeCopied] = useState(false);
+  const openModels = models.filter((m) => !m.comingSoon);
+  const defaultTestModelId = openModels[0]?.id ?? models[0]?.id ?? "";
+  const [testModelId, setTestModelId] = useState<string>(defaultTestModelId);
+  const selectedTestModel = models.find((m) => m.id === testModelId) ?? openModels[0] ?? models[0];
+  const modelTokenBalance = selectedTestModel ? Math.max(0, Math.floor(balanceByModel[selectedTestModel.id] ?? 0)) : 0;
   useEffect(() => {
     if (typeof window !== "undefined") setBaseUrl(`${window.location.origin}/api/monallo/v1`);
   }, [isOpen]);
-  const masked = apiKey ? `${apiKey.slice(0, 10)}${"•".repeat(20)}${apiKey.slice(-4)}` : "—";
+  useEffect(() => {
+    if (!isOpen) return;
+    const current = models.find((m) => m.id === testModelId);
+    if (!current || current.comingSoon) setTestModelId(openModels[0]?.id ?? models[0]?.id ?? "");
+  }, [isOpen]);
+  const masked = apiKey
+    ? `${apiKey.slice(0, 10)}${"•".repeat(20)}${apiKey.slice(-4)}`
+    : apiKeyMasked ?? "—";
   const copy = async () => {
     if (!apiKey) return;
     try {
@@ -384,28 +414,119 @@ function ApiKeyModal({
     } catch (_) {}
   };
 
+  const baseUrlForCode = baseUrl || "https://YOUR_DOMAIN/api/monallo/v1";
+  const exampleModel = testModelId || "gpt-5.2";
+  const curlExample = `curl ${baseUrlForCode}/chat/completions \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -d '{\n    \"model\": \"${exampleModel}\",\n    \"messages\": [{\"role\": \"user\", \"content\": \"Say this is a test!\"}],\n    \"temperature\": 0.78\n  }'`;
+  const jsExample = `// Node.js 18+ (or modern browsers)\nconst baseUrl = \"${baseUrlForCode}\";\nconst apiKey = process.env.MONALLO_API_KEY || \"YOUR_API_KEY\";\n\nconst res = await fetch(baseUrl + \"/chat/completions\", {\n  method: \"POST\",\n  headers: {\n    \"Content-Type\": \"application/json\",\n    \"Authorization\": \"Bearer \" + apiKey,\n  },\n  body: JSON.stringify({\n    model: \"${exampleModel}\",\n    messages: [{ role: \"user\", content: \"Say this is a test!\" }],\n    temperature: 0.78,\n  }),\n});\n\nconsole.log(\"Status:\", res.status);\nconsole.log(await res.text());`;
+  const pyExample = `# Python 3.9+\nimport os\nimport requests\n\nbase_url = \"${baseUrlForCode}\"\napi_key = os.getenv(\"MONALLO_API_KEY\", \"YOUR_API_KEY\")\n\nresp = requests.post(\n    base_url + \"/chat/completions\",\n    headers={\n        \"Content-Type\": \"application/json\",\n        \"Authorization\": f\"Bearer {api_key}\",\n    },\n    json={\n        \"model\": \"${exampleModel}\",\n        \"messages\": [{\"role\": \"user\", \"content\": \"Say this is a test!\"}],\n        \"temperature\": 0.78,\n    },\n    timeout=60,\n)\n\nprint(\"Status:\", resp.status_code)\nprint(resp.text)`;
+  const codeByTab = codeTab === "curl" ? curlExample : codeTab === "js" ? jsExample : pyExample;
+  const copyCode = async () => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(codeByTab);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = codeByTab;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch (_) {}
+  };
+
   const runModelTest = async () => {
-    if (!apiKey || !baseUrl || testLoading) return;
+    if (!baseUrl || testLoading || !selectedTestModel) return;
+    if (selectedTestModel.comingSoon) {
+      setTestResult({ ok: false, title: "This model is not available yet." });
+      return;
+    }
+    if ((modelTokenBalance ?? 0) <= 0 && (monBalance ?? 0) <= 0) {
+      setTestResult({ ok: false, title: "Insufficient balance.", details: "You need either model Token balance or MON balance to run the test." });
+      return;
+    }
+    const promptPer1M = selectedTestModel.promptPer1M;
+    const completionPer1M = selectedTestModel.completionPer1M;
+    if (promptPer1M == null || completionPer1M == null) {
+      setTestResult({ ok: false, title: "Pricing is not configured for this model yet." });
+      return;
+    }
     setTestLoading(true);
     setTestResult(null);
     try {
+      const keyForTest = apiKey ?? (apiKeyHasServer ? await onRevealFromServer() : null);
+      if (!keyForTest) {
+        setTestResult({ ok: false, title: "API key not available.", details: "Please generate an API key first." });
+        return;
+      }
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${keyForTest}`,
         },
         body: JSON.stringify({
-          model: testModel,
+          model: testModelId,
           messages: [{ role: "user", content: testPrompt }],
           temperature: 0.78,
         }),
       });
-      const status = res.status;
       const text = await res.text();
-      setTestResult({ ok: res.ok, status, text: text.slice(0, 1200) });
+
+      if (!res.ok) {
+        setTestResult({ ok: false, title: "Network is busy. Please retry later or contact the administrator." });
+        return;
+      }
+
+      // Success: show important info only.
+      let reply = "";
+      let promptTokens = 0;
+      let completionTokens = 0;
+      try {
+        const json = JSON.parse(text) as {
+          choices?: { message?: { content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        reply = String(json?.choices?.[0]?.message?.content ?? "");
+        promptTokens = Number(json?.usage?.prompt_tokens ?? 0);
+        completionTokens = Number(json?.usage?.completion_tokens ?? 0);
+      } catch (_) {}
+      const replyLine = reply ? reply.slice(0, 280) : "(no reply)";
+      setTestResult({
+        ok: true,
+        title: "Success",
+        details: `Reply: ${replyLine}\nUsage: prompt=${promptTokens || 0}, completion=${completionTokens || 0}`,
+      });
+
+      // Only charge when call succeeded and contains usage.
+      try {
+        if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens) && (promptTokens + completionTokens) > 0) {
+          const availableTokens = Math.max(0, Math.floor(modelTokenBalance ?? 0));
+          const coverPrompt = Math.min(promptTokens, availableTokens);
+          const remainingAfterPrompt = availableTokens - coverPrompt;
+          const coverCompletion = Math.min(completionTokens, remainingAfterPrompt);
+          const spentTokens = coverPrompt + coverCompletion;
+          if (spentTokens > 0) onSpendModelTokens(testModelId, spentTokens);
+
+          const remainingPrompt = Math.max(0, promptTokens - coverPrompt);
+          const remainingCompletion = Math.max(0, completionTokens - coverCompletion);
+          const promptCostPerTokenMon = promptPer1M / 1_000_000;
+          const completionCostPerTokenMon = completionPer1M / 1_000_000;
+          const costMon =
+            remainingPrompt * promptCostPerTokenMon +
+            remainingCompletion * completionCostPerTokenMon;
+
+          const spendableMon = Math.max(0, monBalance ?? 0);
+          const spentMon = Math.min(spendableMon, costMon);
+          if (spentMon > 0) onSpendMon(spentMon);
+        }
+      } catch (_) {}
     } catch (e) {
-      setTestResult({ ok: false, status: 0, text: e instanceof Error ? e.message : String(e) });
+      setTestResult({ ok: false, title: "Network is busy. Please retry later or contact the administrator." });
     } finally {
       setTestLoading(false);
     }
@@ -416,121 +537,255 @@ function ApiKeyModal({
       {isOpen && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-md bg-[#0d0d14] border border-white/10 rounded-3xl p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-6">
+          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-4xl bg-[#0d0d14] border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-white/[0.08]">
               <div className="flex items-center gap-2">
                 <Key className="w-5 h-5 text-[#F68521]" />
                 <h2 className="text-xl font-bold text-white">API Key</h2>
               </div>
               <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <p className="text-sm text-gray-400 mb-4">{apiKey ? "Use this key to call Monallo LLM APIs. Keep it secret." : "Generate an API key to use Monallo LLM endpoints."}</p>
 
-            {/* Section 1: API Key + Base URL */}
-            <div className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 mb-4">
-              <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-3">API Key & Base URL</div>
-              {baseUrl && (
-                <div className="mb-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Monallo Base URL</div>
-                  <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 font-mono text-sm text-gray-300 break-all">
-                    <span className="flex-1 min-w-0 truncate">{baseUrl}</span>
-                    <button
-                      type="button"
-                      onClick={copyBaseUrl}
-                      className="shrink-0 p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white"
-                      title="Copy Base URL"
-                    >
-                      {baseUrlCopied ? <CheckCircle2 className="w-4 h-4 text-[#14F195]" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1.5">Use with Authorization: Bearer &lt;API Key&gt;</p>
-                </div>
-              )}
-              {apiKey ? (
-                <>
-                  <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">API Key</div>
-                  <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 mb-3 font-mono text-sm text-gray-300 break-all">
-                    {masked}
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={copy}
-                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-white/10 border border-white/10 text-white font-medium hover:bg-white/15"
-                    >
-                      {copied ? <CheckCircle2 className="w-4 h-4 text-[#14F195]" /> : <Copy className="w-4 h-4" />}
-                      {copied ? "Copied" : "Copy"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onRegenerate}
-                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 font-medium hover:bg-amber-500/20"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                      Regenerate
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onRegenerate}
-                  className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-[#F68521] to-[#FFB347] text-white font-semibold hover:opacity-95"
-                >
-                  <Key className="w-4 h-4" />
-                  Generate API Key
-                </button>
-              )}
-            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
+              {/* Left: key + test */}
+              <div className="p-6">
+                <p className="text-sm text-gray-400 mb-4">{apiKey ? "Use this key to call Monallo LLM APIs. Keep it secret." : "Generate an API key to use Monallo LLM endpoints."}</p>
 
-            {/* Section 2: Model test */}
-            <div className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-3">Model Test</div>
-              <div className="grid grid-cols-1 gap-3">
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Model</div>
-                  <input
-                    value={testModel}
-                    onChange={(e) => setTestModel(e.target.value)}
-                    className="w-full rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 text-sm text-gray-200 outline-none focus:border-white/20"
-                    placeholder="e.g. gpt-5.2"
-                    disabled={testLoading}
-                  />
+                <div className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 mb-4">
+                  {baseUrl && (
+                    <div className="mb-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Monallo Base URL</div>
+                      <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 font-mono text-sm text-gray-300 break-all">
+                        <span className="flex-1 min-w-0 truncate">{baseUrl}</span>
+                        <button
+                          type="button"
+                          onClick={copyBaseUrl}
+                          className="shrink-0 p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white"
+                          title="Copy Base URL"
+                        >
+                          {baseUrlCopied ? <CheckCircle2 className="w-4 h-4 text-[#14F195]" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1.5">Use with Authorization: Bearer &lt;API Key&gt;</p>
+                    </div>
+                  )}
+                  {apiKey ? (
+                    <>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">API Key</div>
+                      <div className="flex items-center gap-2 rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 mb-3 font-mono text-sm text-gray-300 break-all">
+                        {masked}
+                      </div>
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={copy}
+                          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-white/10 border border-white/10 text-white font-medium hover:bg-white/15"
+                        >
+                          {copied ? <CheckCircle2 className="w-4 h-4 text-[#14F195]" /> : <Copy className="w-4 h-4" />}
+                          {copied ? "Copied" : "Copy"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onRegenerate}
+                          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 font-medium hover:bg-amber-500/20"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          Regenerate
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-3">
+                      {apiKeyHasServer && (
+                        <div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 font-mono text-sm text-gray-300 break-all">
+                          {masked}
+                        </div>
+                      )}
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={onRegenerate}
+                          disabled={apiKeyLoading}
+                          className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl font-semibold transition ${
+                            apiKeyLoading ? "bg-white/5 border border-white/10 text-gray-500 cursor-not-allowed" : "bg-gradient-to-r from-[#F68521] to-[#FFB347] text-white hover:opacity-95"
+                          }`}
+                        >
+                          <Key className="w-4 h-4" />
+                          Generate API Key
+                        </button>
+                        {apiKeyHasServer && (
+                          <button
+                            type="button"
+                            onClick={onRevealFromServer}
+                            disabled={apiKeyLoading}
+                            className={`flex-1 flex items-center justify-center gap-2 py-3.5 rounded-2xl border font-semibold transition ${
+                              apiKeyLoading ? "bg-white/5 border border-white/10 text-gray-500 cursor-not-allowed" : "bg-white/10 border border-white/10 text-white hover:bg-white/15"
+                            }`}
+                          >
+                            {apiKeyLoading ? "Loading…" : "Reveal"}
+                          </button>
+                        )}
+                      </div>
+                      {apiKeyHasServer && (
+                        <p className="text-xs text-gray-500">
+                          Key is stored in database. Click <span className="text-gray-300">Reveal</span> and sign with your wallet to view/copy it.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Prompt</div>
-                  <input
-                    value={testPrompt}
-                    onChange={(e) => setTestPrompt(e.target.value)}
-                    className="w-full rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 text-sm text-gray-200 outline-none focus:border-white/20"
-                    placeholder="Say this is a test!"
-                    disabled={testLoading}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={runModelTest}
-                  disabled={!apiKey || !baseUrl || testLoading}
-                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-semibold transition ${
-                    !apiKey || !baseUrl || testLoading
-                      ? "bg-white/5 border border-white/10 text-gray-500 cursor-not-allowed"
-                      : "bg-white/10 border border-white/10 text-white hover:bg-white/15"
-                  }`}
-                >
-                  {testLoading ? "Testing..." : "Test model availability"}
-                </button>
-              </div>
+
+                <div className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-3">Model Test</div>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Current model</div>
+                      <div className="flex flex-wrap gap-2">
+                        {models.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            disabled={!!m.comingSoon}
+                            onClick={() => !m.comingSoon && setTestModelId(m.id)}
+                            className={`rounded-xl px-3 py-2 text-sm font-medium border transition ${
+                              m.comingSoon
+                                ? "border-white/10 bg-white/[0.02] text-gray-500 cursor-not-allowed"
+                                : testModelId === m.id
+                                  ? "border-[#F68521] bg-[#F68521]/15 text-[#F68521]"
+                                  : "border-white/10 bg-white/[0.04] text-gray-300 hover:border-white/20 hover:text-white"
+                            }`}
+                          >
+                            <span className="truncate">{m.name}</span>
+                            {m.comingSoon && <span className="ml-1.5 text-[10px] text-amber-400/90">Coming Soon</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedTestModel && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          Available: <span className="text-gray-200">{modelTokenBalance.toLocaleString()}</span> tokens ·{" "}
+                          <span className="text-gray-200">{Math.max(0, (monBalance ?? 0)).toFixed(6)}</span> MON
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Prompt</div>
+                      <input
+                        value={testPrompt}
+                        onChange={(e) => setTestPrompt(e.target.value)}
+                        className="w-full rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3 text-sm text-gray-200 outline-none focus:border-white/20"
+                        placeholder="Say this is a test!"
+                        disabled={testLoading}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={runModelTest}
+                      disabled={!baseUrl || testLoading || selectedTestModel?.comingSoon || ((modelTokenBalance ?? 0) <= 0 && (monBalance ?? 0) <= 0)}
+                      className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-semibold transition ${
+                        !baseUrl || testLoading || selectedTestModel?.comingSoon || ((modelTokenBalance ?? 0) <= 0 && (monBalance ?? 0) <= 0)
+                          ? "bg-white/5 border border-white/10 text-gray-500 cursor-not-allowed"
+                          : "bg-white/10 border border-white/10 text-white hover:bg-white/15"
+                      }`}
+                    >
+                      {testLoading ? "Testing..." : "Test model availability"}
+                    </button>
+                  </div>
               {testResult && (
-                <div className={`mt-3 rounded-2xl border px-4 py-3 text-xs font-mono whitespace-pre-wrap break-words ${
+                <div className={`mt-3 rounded-2xl border px-4 py-3 text-xs whitespace-pre-wrap break-words ${
                   testResult.ok ? "bg-[#14F195]/10 border-[#14F195]/20 text-[#B7F7D1]" : "bg-red-500/10 border-red-500/20 text-red-200"
                 }`}>
-                  <div className="mb-1 font-sans text-[11px] tracking-widest uppercase opacity-80">
-                    Result {testResult.status ? `(HTTP ${testResult.status})` : ""}
+                  <div className="mb-1 text-[11px] tracking-widest uppercase opacity-80">
+                    {testResult.ok ? "SUCCESS" : "ERROR"}
                   </div>
-                  {testResult.text}
+                  <div className="font-medium">{testResult.title}</div>
+                  {testResult.details && <div className="mt-1 font-mono">{testResult.details}</div>}
                 </div>
               )}
-              {!apiKey && <p className="mt-2 text-xs text-gray-500">Generate an API key first to run the test.</p>}
+                  {!apiKey && <p className="mt-2 text-xs text-gray-500">Generate an API key first to run the test.</p>}
+                </div>
+              </div>
+
+              {/* Right: code examples */}
+              <div className="p-6 border-t lg:border-t-0 lg:border-l border-white/[0.08] bg-white/[0.02] flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-500">Code Examples</div>
+                    <div className="text-sm font-semibold text-white mt-1">Quick start</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={copyCode}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white text-sm hover:bg-white/15"
+                    title="Copy example"
+                  >
+                    {codeCopied ? <CheckCircle2 className="w-4 h-4 text-[#14F195]" /> : <Copy className="w-4 h-4" />}
+                    {codeCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-1 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setCodeTab("curl")}
+                    className={`px-3 py-2 text-sm font-medium rounded-xl border transition ${
+                      codeTab === "curl" ? "border-[#F68521] text-white bg-[#F68521]/15" : "border-white/10 text-gray-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    curl
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCodeTab("js")}
+                    className={`px-3 py-2 text-sm font-medium rounded-xl border transition ${
+                      codeTab === "js" ? "border-[#F68521] text-white bg-[#F68521]/15" : "border-white/10 text-gray-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    JavaScript
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCodeTab("py")}
+                    className={`px-3 py-2 text-sm font-medium rounded-xl border transition ${
+                      codeTab === "py" ? "border-[#F68521] text-white bg-[#F68521]/15" : "border-white/10 text-gray-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    Python
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border border-white/[0.08] overflow-hidden flex-1 min-h-[320px]">
+                  <div className="h-full overflow-auto">
+                    <SyntaxHighlighter
+                      language={codeTab === "curl" ? "bash" : codeTab === "js" ? "javascript" : "python"}
+                      style={{
+                        ...oneDark,
+                        'pre[class*="language-"]': {
+                          ...(oneDark as any)['pre[class*="language-"]'],
+                          background: "transparent",
+                        },
+                        'code[class*="language-"]': {
+                          ...(oneDark as any)['code[class*="language-"]'],
+                          background: "transparent",
+                        },
+                      } as any}
+                      customStyle={{
+                        margin: 0,
+                        background: "transparent",
+                        fontSize: "12px",
+                        lineHeight: "1.55",
+                        padding: "16px",
+                        height: "100%",
+                      }}
+                      wrapLongLines
+                    >
+                      {codeByTab}
+                    </SyntaxHighlighter>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-gray-500">
+                  Replace <span className="text-gray-300 font-mono">YOUR_API_KEY</span> with your Monallo API Key.
+                </p>
+              </div>
             </div>
           </motion.div>
         </motion.div>
@@ -546,20 +801,89 @@ function HistoryModal({
   loading,
   purchaseHistory,
   consumptionHistory,
+  models,
 }: {
   isOpen: boolean;
   onClose: () => void;
   loading: boolean;
   purchaseHistory: PurchaseRecord[];
-  consumptionHistory: { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[];
+  consumptionHistory: { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
+  models: LLMModelInfo[];
 }) {
   const [tab, setTab] = useState<"purchase" | "consumption" | "calls">("purchase");
+  const salesNameById = useRef<Record<string, string>>({});
+  useEffect(() => {
+    salesNameById.current = Object.fromEntries((models ?? []).map((m) => [m.id, m.name]));
+  }, [models]);
+  const PAGE_SIZE = 10;
+  const [consumptionPage, setConsumptionPage] = useState(1);
+  const [callsPage, setCallsPage] = useState(1);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setTab("purchase");
+    setConsumptionPage(1);
+    setCallsPage(1);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (tab === "consumption") setConsumptionPage(1);
+    if (tab === "calls") setCallsPage(1);
+  }, [tab]);
+
+  const consumptionTotalPages = Math.max(1, Math.ceil(consumptionHistory.length / PAGE_SIZE));
+  const consumptionPageClamped = Math.min(consumptionTotalPages, Math.max(1, consumptionPage));
+  const consumptionStart = (consumptionPageClamped - 1) * PAGE_SIZE;
+  const consumptionRows = consumptionHistory.slice(consumptionStart, consumptionStart + PAGE_SIZE);
+
+  const callsTotalPages = Math.max(1, Math.ceil(consumptionHistory.length / PAGE_SIZE));
+  const callsPageClamped = Math.min(callsTotalPages, Math.max(1, callsPage));
+  const callsStart = (callsPageClamped - 1) * PAGE_SIZE;
+  const callsRows = consumptionHistory.slice(callsStart, callsStart + PAGE_SIZE);
+
+  const Pagination = ({
+    page,
+    totalPages,
+    onPrev,
+    onNext,
+  }: {
+    page: number;
+    totalPages: number;
+    onPrev: () => void;
+    onNext: () => void;
+  }) => (
+    <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={onPrev}
+        disabled={page <= 1}
+        className={`px-3 py-1.5 rounded-xl text-sm border transition ${
+          page <= 1 ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
+        }`}
+      >
+        Prev
+      </button>
+      <div className="text-xs text-gray-500">
+        Page <span className="text-gray-200">{page}</span> / <span className="text-gray-200">{totalPages}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={page >= totalPages}
+        className={`px-3 py-1.5 rounded-xl text-sm border transition ${
+          page >= totalPages ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
+        }`}
+      >
+        Next
+      </button>
+    </div>
+  );
   return (
     <AnimatePresence>
       {isOpen && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-[#0d0d14] border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
+          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-4xl max-h-[85vh] flex flex-col bg-[#0d0d14] border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08] shrink-0">
               <div className="flex items-center gap-2">
                 <History className="w-5 h-5 text-[#F68521]" />
@@ -617,8 +941,21 @@ function HistoryModal({
                       {purchaseHistory.map((r) => (
                         <li key={r.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-sm">
                           <div className="flex flex-col gap-0.5">
-                            <span className="font-medium text-white">{r.modelName}</span>
-                            <span className="text-gray-500 text-xs">{r.tokenCount.toLocaleString()} tokens · {new Date(r.timestamp).toLocaleString()}</span>
+                            <span className="font-medium text-white flex items-center gap-2 min-w-0">
+                              <span
+                                className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full border shrink-0 ${
+                                  r.kind === "recharge"
+                                    ? "text-[#14F195] border-[#14F195]/30 bg-[#14F195]/10"
+                                    : "text-[#F68521] border-[#F68521]/30 bg-[#F68521]/10"
+                                }`}
+                              >
+                                {r.kind === "recharge" ? "Recharge" : "Package"}
+                              </span>
+                              <span className="truncate">{r.modelName}</span>
+                            </span>
+                            <span className="text-gray-500 text-xs">
+                              {r.kind === "recharge" ? `+${r.amountUsd.toFixed(2)} MON` : `${r.tokenCount.toLocaleString()} tokens`} · {new Date(r.timestamp).toLocaleString()}
+                            </span>
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="text-white">{r.amount} {r.token}</span>
@@ -643,19 +980,44 @@ function HistoryModal({
                   {consumptionHistory.length === 0 ? (
                     <p className="px-4 py-6 text-sm text-gray-500 text-center">No consumption records yet.</p>
                   ) : (
-                    <ul className="divide-y divide-white/[0.06]">
-                      {consumptionHistory.map((c) => (
-                        <li key={c.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-                          <span className="font-medium text-white">{c.model}</span>
-                          <span className="text-gray-400">
-                            Prompt: <span className="text-white">{c.prompt_tokens.toLocaleString()}</span>
-                            {" · "}
-                            Completion: <span className="text-white">{c.completion_tokens.toLocaleString()}</span>
-                          </span>
-                          <span className="text-gray-500 text-xs">{new Date(c.created_at * 1000).toLocaleString()}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="w-full overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-white/[0.02]">
+                          <tr className="text-xs uppercase tracking-widest text-gray-500">
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Model</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Prompt</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Completion</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Total</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Est. MON</th>
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Charge</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Time</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.06]">
+                          {consumptionRows.map((c) => (
+                            <tr key={c.id} className="text-gray-300">
+                              <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{salesNameById.current[c.model] ?? c.model}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.prompt_tokens.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.completion_tokens.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{(c.prompt_tokens + c.completion_tokens).toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap text-gray-200">{(c.charged_mon / 1e6).toFixed(6)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-gray-400">
+                                {c.charge_method === "token" ? "Package" : c.charge_method === "mixed" ? "Package + MON" : "MON"}
+                              </td>
+                              <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">{new Date(c.created_at * 1000).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {consumptionHistory.length > 0 && (
+                    <Pagination
+                      page={consumptionPageClamped}
+                      totalPages={consumptionTotalPages}
+                      onPrev={() => setConsumptionPage((p) => Math.max(1, p - 1))}
+                      onNext={() => setConsumptionPage((p) => Math.min(consumptionTotalPages, p + 1))}
+                    />
                   )}
                 </div>
               ) : (
@@ -663,19 +1025,44 @@ function HistoryModal({
                   {consumptionHistory.length === 0 ? (
                     <p className="px-4 py-6 text-sm text-gray-500 text-center">No model call records yet.</p>
                   ) : (
-                    <ul className="divide-y divide-white/[0.06]">
-                      {consumptionHistory.map((c) => (
-                        <li key={c.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-                          <span className="font-medium text-white">{c.model}</span>
-                          <span className="text-gray-400">
-                            Prompt: <span className="text-white">{c.prompt_tokens.toLocaleString()}</span>
-                            {" · "}
-                            Completion: <span className="text-white">{c.completion_tokens.toLocaleString()}</span>
-                          </span>
-                          <span className="text-gray-500 text-xs">{new Date(c.created_at * 1000).toLocaleString()}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="w-full overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-white/[0.02]">
+                          <tr className="text-xs uppercase tracking-widest text-gray-500">
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Model</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Prompt</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Completion</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Total</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Est. MON</th>
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Charge</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Time</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.06]">
+                          {callsRows.map((c) => (
+                            <tr key={c.id} className="text-gray-300">
+                              <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{salesNameById.current[c.model] ?? c.model}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.prompt_tokens.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.completion_tokens.toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">{(c.prompt_tokens + c.completion_tokens).toLocaleString()}</td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap text-gray-200">{(c.charged_mon / 1e6).toFixed(6)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-gray-400">
+                                {c.charge_method === "token" ? "Package" : c.charge_method === "mixed" ? "Package + MON" : "MON"}
+                              </td>
+                              <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">{new Date(c.created_at * 1000).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {consumptionHistory.length > 0 && (
+                    <Pagination
+                      page={callsPageClamped}
+                      totalPages={callsTotalPages}
+                      onPrev={() => setCallsPage((p) => Math.max(1, p - 1))}
+                      onNext={() => setCallsPage((p) => Math.min(callsTotalPages, p + 1))}
+                    />
                   )}
                 </div>
               )}
@@ -721,12 +1108,15 @@ export default function StorePage() {
   const [balanceByModel, setBalanceByModel] = useState<Record<string, number>>({});
   const [rechargeBalanceMon, setRechargeBalanceMon] = useState<number>(0);
   const [apiKey, setApiKey] = useState<string | null>(null);
+  const [apiKeyMasked, setApiKeyMasked] = useState<string | null>(null);
+  const [apiKeyHasServer, setApiKeyHasServer] = useState<boolean>(false);
+  const [apiKeyLoading, setApiKeyLoading] = useState<boolean>(false);
   const [showComingSoonModal, setShowComingSoonModal] = useState(false);
   const [hoveredModelId, setHoveredModelId] = useState<string | null>(null);
   const [paymentTokenPriceUsd, setPaymentTokenPriceUsd] = useState<number | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [purchaseHistory, setPurchaseHistory] = useState<PurchaseRecord[]>([]);
-  const [consumptionHistory, setConsumptionHistory] = useState<{ id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[]>([]);
+  const [consumptionHistory, setConsumptionHistory] = useState<{ id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[]>([]);
   const [recordIndex, setRecordIndex] = useState(0);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -734,6 +1124,7 @@ export default function StorePage() {
   const [showPaymentErrorModal, setShowPaymentErrorModal] = useState(false);
   const [paymentErrorModalMessage, setPaymentErrorModalMessage] = useState("");
   const [chainBalanceMon, setChainBalanceMon] = useState<number | null>(null);
+  const [optimisticMonSpent, setOptimisticMonSpent] = useState<number>(0);
   const purchaseHistoryRef = useRef<HTMLDivElement>(null);
 
   const fetchChainBalance = useCallback(() => {
@@ -749,6 +1140,11 @@ export default function StorePage() {
     if (address && chain?.id) fetchChainBalance();
   }, [address, chain?.id, fetchChainBalance]);
 
+  // When switching wallet or chain balance updates, reset optimistic spend for a clean view.
+  useEffect(() => {
+    setOptimisticMonSpent(0);
+  }, [address, chain?.id]);
+
   const displayedRecords = purchaseHistory.slice(0, HISTORY_DISPLAY);
   const currentRecord = displayedRecords[recordIndex] ?? null;
   useEffect(() => {
@@ -761,11 +1157,12 @@ export default function StorePage() {
     try {
       const res = await fetch(`/api/store/purchases?address=${encodeURIComponent(address.trim())}&limit=100`);
       if (!res.ok) return;
-      const rows = (await res.json()) as { id: number; model_name: string; token_count: number; amount: string; token: string; amount_usd: number; tx_hash: string | null; chain_id: number; created_at: number }[];
+      const rows = (await res.json()) as { id: number; kind?: string; model_name: string; token_count: number; amount: string; token: string; amount_usd: number; tx_hash: string | null; chain_id: number; created_at: number }[];
       setPurchaseHistory(
         (Array.isArray(rows) ? rows : []).map((r) => ({
           id: String(r.id),
           timestamp: r.created_at * 1000,
+          kind: (r.kind === "recharge" ? "recharge" : "package"),
           modelName: r.model_name,
           tokenCount: r.token_count,
           amount: r.amount,
@@ -785,7 +1182,7 @@ export default function StorePage() {
     try {
       const res = await fetch(`/api/store/usage?address=${encodeURIComponent(address.trim())}&limit=100`);
       if (!res.ok) return;
-      const rows = (await res.json()) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; created_at: number }[];
+      const rows = (await res.json()) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
       setConsumptionHistory(Array.isArray(rows) ? rows : []);
     } catch (_) {
       setConsumptionHistory([]);
@@ -808,7 +1205,20 @@ export default function StorePage() {
       const raw = localStorage.getItem(getBalanceKey(address));
       if (raw) {
         const parsed = JSON.parse(raw) as Record<string, number>;
-        if (parsed && typeof parsed === "object") setBalanceByModel(parsed);
+        if (parsed && typeof parsed === "object") {
+          // Backward-compat: migrate old model ids to new ones.
+          const next: Record<string, number> = { ...parsed };
+          if (next["minimax-m2.5"] != null && next["MiniMax-M2.5"] == null) {
+            next["MiniMax-M2.5"] = next["minimax-m2.5"];
+            delete next["minimax-m2.5"];
+          }
+          if (next["gemini-3.1"] != null && next["gemini-3.1-pro-preview"] == null) {
+            next["gemini-3.1-pro-preview"] = next["gemini-3.1"];
+            delete next["gemini-3.1"];
+          }
+          setBalanceByModel(next);
+          localStorage.setItem(getBalanceKey(address), JSON.stringify(next));
+        }
       }
     } catch (_) {}
   }, [address]);
@@ -823,11 +1233,29 @@ export default function StorePage() {
     } catch (_) {}
   }, [address]);
   useEffect(() => {
-    if (typeof window === "undefined" || !address) return;
-    try {
-      const key = localStorage.getItem(getApiKeyStorageKey(address));
-      if (key) setApiKey(key);
-    } catch (_) {}
+    if (typeof window === "undefined") return;
+    if (!address) {
+      setApiKey(null);
+      setApiKeyMasked(null);
+      setApiKeyHasServer(false);
+      return;
+    }
+    setApiKey(null);
+    setApiKeyLoading(true);
+    fetch(`/api/store/api-key/status?wallet=${encodeURIComponent(address)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        if (data.has_key) {
+          setApiKeyHasServer(true);
+          if (typeof data.masked === "string") setApiKeyMasked(data.masked);
+        } else {
+          setApiKeyHasServer(false);
+          setApiKeyMasked(null);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setApiKeyLoading(false));
   }, [address]);
 
   const saveBalance = (next: Record<string, number>) => {
@@ -838,19 +1266,73 @@ export default function StorePage() {
     setRechargeBalanceMon(mon);
     if (address && typeof window !== "undefined") localStorage.setItem(getRechargeKey(address), String(mon));
   };
-  const saveApiKey = (key: string) => {
-    setApiKey(key);
-    if (address && typeof window !== "undefined") localStorage.setItem(getApiKeyStorageKey(address), key);
-  };
   const handleRegenerateApiKey = () => {
     const newKey = generateApiKey();
-    saveApiKey(newKey);
+    setApiKey(newKey);
+    setApiKeyMasked(`${newKey.slice(0, 10)}${"•".repeat(20)}${newKey.slice(-4)}`);
+    setApiKeyHasServer(true);
     if (address) {
       fetch("/api/store/register-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wallet_address: address, api_key: newKey }),
       }).catch(() => {});
+    }
+  };
+
+  const spendModelTokens = (modelId: string, tokens: number) => {
+    const t = Math.max(0, Math.floor(tokens));
+    if (!t || !address) return;
+    const current = Math.max(0, Math.floor(balanceByModel[modelId] ?? 0));
+    const next = Math.max(0, current - t);
+    saveBalance({ ...balanceByModel, [modelId]: next });
+  };
+
+  const spendMon = (mon: number) => {
+    const m = Math.max(0, mon);
+    if (!m) return;
+    // Keep 6 decimals.
+    const rounded = Math.round(m * 1e6) / 1e6;
+    setOptimisticMonSpent((prev) => Math.round((prev + rounded) * 1e6) / 1e6);
+  };
+
+  const revealApiKeyFromServer = async (): Promise<string | null> => {
+    if (!address || typeof window === "undefined" || !window.ethereum) return null;
+    setApiKeyLoading(true);
+    try {
+      const ch = await fetch("/api/store/api-key/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet_address: address }),
+      });
+      const challenge = ch.ok ? await ch.json() : null;
+      if (!challenge?.message || !challenge?.nonce) throw new Error("Failed to create challenge");
+      const provider = new ethers.BrowserProvider(window.ethereum as unknown as ethers.Eip1193Provider);
+      const signer = await provider.getSigner();
+      const signature = await signer.signMessage(String(challenge.message));
+      const res = await fetch("/api/store/api-key/reveal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet_address: address,
+          nonce: challenge.nonce,
+          message: challenge.message,
+          signature,
+        }),
+      });
+      const data = res.ok ? await res.json() : await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? "Failed to reveal key");
+      if (typeof data?.api_key === "string") {
+        setApiKey(data.api_key);
+        setApiKeyMasked(`${data.api_key.slice(0, 10)}${"•".repeat(20)}${data.api_key.slice(-4)}`);
+        return data.api_key as string;
+      }
+      return null;
+    } catch (_) {
+      // ignore; modal can show masked only
+      return null;
+    } finally {
+      setApiKeyLoading(false);
     }
   };
   const purchaseFormRef = useRef<HTMLDivElement>(null);
@@ -969,8 +1451,17 @@ export default function StorePage() {
         isOpen={showApiKeyModal}
         onClose={() => setShowApiKeyModal(false)}
         apiKey={apiKey}
+        apiKeyMasked={apiKeyMasked}
+        apiKeyHasServer={apiKeyHasServer}
+        apiKeyLoading={apiKeyLoading}
+        models={LLM_MODELS}
+        balanceByModel={balanceByModel}
+        monBalance={Math.max(0, Math.round(((chainBalanceMon ?? rechargeBalanceMon) - optimisticMonSpent) * 1e6) / 1e6)}
+        onSpendModelTokens={spendModelTokens}
+        onSpendMon={spendMon}
         onCopy={() => {}}
         onRegenerate={handleRegenerateApiKey}
+        onRevealFromServer={revealApiKeyFromServer}
       />
 
       <HistoryModal
@@ -979,6 +1470,7 @@ export default function StorePage() {
         loading={historyLoading}
         purchaseHistory={purchaseHistory}
         consumptionHistory={consumptionHistory}
+        models={LLM_MODELS}
       />
 
       <AnimatePresence>
@@ -1357,16 +1849,6 @@ export default function StorePage() {
                         const cryptoAmount = rechargeUsd / paymentTokenPriceUsd;
                         const amountStr = cryptoAmount < 1e-10 ? "0.000001" : cryptoAmount.toFixed(9).replace(/\.?0+$/, "") || "0.000001";
                         const chainId = getChainIdForPayment(currentPaymentToken.chainId);
-                        const useContract = CREDIT_LEDGER_ADDRESS && !currentPaymentToken.contract && currentPaymentToken.symbol === "PAS";
-                        if (useContract) {
-                          const amountWei = ethers.parseEther(amountStr);
-                          const { hash: txHash } = await rechargeViaContract(window.ethereum, CREDIT_LEDGER_ADDRESS, amountWei, chainId);
-                          fetchChainBalance();
-                          saveRechargeMon(rechargeBalanceMon + rechargeUsd);
-                          setShowPurchaseSuccessModal(true);
-                          setIsPurchasing(false);
-                          return;
-                        }
                         const recipient = typeof process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT === "string"
                           ? process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT.trim()
                           : "";
@@ -1389,9 +1871,37 @@ export default function StorePage() {
                           await fetch("/api/store/confirm-payment", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ tx_hash: txHash, wallet_address: address, amount_mon: rechargeUsd, chain_id: chainId }),
+                            body: JSON.stringify({
+                              tx_hash: txHash,
+                              wallet_address: address,
+                              amount_mon: rechargeUsd,
+                              chain_id: chainId,
+                              payment_to: recipient,
+                              payment_token_symbol: currentPaymentToken.symbol,
+                              payment_token_contract: currentPaymentToken.contract ?? null,
+                              payment_amount: amountStr,
+                              payment_decimals: currentPaymentToken.decimals,
+                            }),
+                          });
+                          // Record recharge in purchases (Records module).
+                          await fetch("/api/store/purchases", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              wallet_address: address,
+                              kind: "recharge",
+                              model_id: null,
+                              model_name: "Recharge",
+                              token_count: 0,
+                              amount: amountStr,
+                              token: currentPaymentToken.symbol,
+                              amount_usd: rechargeUsd,
+                              tx_hash: txHash,
+                              chain_id: chainId,
+                            }),
                           });
                           fetchChainBalance();
+                          fetchPurchaseHistory();
                         } catch (_) {}
                         saveRechargeMon(rechargeBalanceMon + rechargeUsd);
                         setShowPurchaseSuccessModal(true);
@@ -1411,42 +1921,26 @@ export default function StorePage() {
                       const cryptoAmount = orderTotalUsd / paymentTokenPriceUsd;
                       const amountStr = cryptoAmount < 1e-10 ? "0.000001" : cryptoAmount.toFixed(9).replace(/\.?0+$/, "") || "0.000001";
                       const chainId = getChainIdForPayment(currentPaymentToken.chainId);
-                      const useContract = CREDIT_LEDGER_ADDRESS && !currentPaymentToken.contract && currentPaymentToken.symbol === "PAS";
                       let txHash: string;
-                      if (useContract) {
-                        const amountWei = ethers.parseEther(amountStr);
-                        const res = await rechargeViaContract(window.ethereum, CREDIT_LEDGER_ADDRESS, amountWei, chainId);
-                        txHash = res.hash;
-                        fetchChainBalance();
-                      } else {
-                        const recipient = typeof process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT === "string"
-                          ? process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT.trim()
-                          : "";
-                        if (!recipient || recipient.length < 40) {
-                          setPaymentError("Store payment recipient not configured (NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT).");
-                          setIsPurchasing(false);
-                          return;
-                        }
-                        const res = await sendViaWallet(window.ethereum, {
-                          chainId,
-                          to: recipient,
-                          amount: amountStr,
-                          tokenSymbol: currentPaymentToken.symbol,
-                          tokenContract: currentPaymentToken.contract,
-                          decimals: currentPaymentToken.decimals,
-                        });
-                        txHash = res.hash;
-                        const provider = new ethers.BrowserProvider(window.ethereum as unknown as ethers.Eip1193Provider);
-                        await provider.waitForTransaction(txHash);
-                        try {
-                          await fetch("/api/store/confirm-payment", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ tx_hash: txHash, wallet_address: address, amount_mon: orderTotalUsd, chain_id: chainId }),
-                          });
-                          fetchChainBalance();
-                        } catch (_) {}
+                      const recipient = typeof process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT === "string"
+                        ? process.env.NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT.trim()
+                        : "";
+                      if (!recipient || recipient.length < 40) {
+                        setPaymentError("Store payment recipient not configured (NEXT_PUBLIC_STORE_PAYMENT_RECIPIENT).");
+                        setIsPurchasing(false);
+                        return;
                       }
+                      const res = await sendViaWallet(window.ethereum, {
+                        chainId,
+                        to: recipient,
+                        amount: amountStr,
+                        tokenSymbol: currentPaymentToken.symbol,
+                        tokenContract: currentPaymentToken.contract,
+                        decimals: currentPaymentToken.decimals,
+                      });
+                      txHash = res.hash;
+                      const provider = new ethers.BrowserProvider(window.ethereum as unknown as ethers.Eip1193Provider);
+                      await provider.waitForTransaction(txHash);
                       saveBalance({
                         ...balanceByModel,
                         [selectedModelId]: (balanceByModel[selectedModelId] ?? 0) + tokenCount,
@@ -1458,6 +1952,8 @@ export default function StorePage() {
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
                             wallet_address: address,
+                            kind: "package",
+                            model_id: selectedModelId,
                             model_name: selectedModelForRecord?.name ?? selectedModelId,
                             token_count: tokenCount,
                             amount: amountStr,
@@ -1469,7 +1965,6 @@ export default function StorePage() {
                         });
                       } catch (_) {}
                       fetchPurchaseHistory();
-                      saveRechargeMon(rechargeBalanceMon + orderTotalUsd);
                       setShowPurchaseSuccessModal(true);
                     } catch (e) {
                       setPaymentError(null);
@@ -1539,13 +2034,30 @@ export default function StorePage() {
               ) : (
                 <div className="rounded-lg bg-white/[0.04] border border-white/[0.06] px-3 py-2 space-y-1.5">
                   <div className="flex justify-between items-center gap-2 text-xs">
+                    <span className="text-gray-500">Type</span>
+                    <span className={`text-[11px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full border ${
+                      currentRecord.kind === "recharge"
+                        ? "text-[#14F195] border-[#14F195]/30 bg-[#14F195]/10"
+                        : "text-[#F68521] border-[#F68521]/30 bg-[#F68521]/10"
+                    }`}>
+                      {currentRecord.kind === "recharge" ? "Recharge" : "Package"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center gap-2 text-xs">
                     <span className="text-gray-500">Model</span>
                     <span className="text-white font-medium truncate">{currentRecord.modelName ?? "—"}</span>
                   </div>
-                  <div className="flex justify-between items-center gap-2 text-xs">
-                    <span className="text-gray-500">Tokens</span>
-                    <span className="text-white">{(currentRecord.tokenCount ?? 0).toLocaleString()}</span>
-                  </div>
+                  {currentRecord.kind === "recharge" ? (
+                    <div className="flex justify-between items-center gap-2 text-xs">
+                      <span className="text-gray-500">Recharge</span>
+                      <span className="text-white">+{currentRecord.amountUsd.toFixed(2)} MON</span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center gap-2 text-xs">
+                      <span className="text-gray-500">Tokens</span>
+                      <span className="text-white">{(currentRecord.tokenCount ?? 0).toLocaleString()}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center gap-2 text-xs">
                     <span className="text-gray-500">Time</span>
                     <span className="text-white truncate">{new Date(currentRecord.timestamp).toLocaleString()}</span>

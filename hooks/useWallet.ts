@@ -380,7 +380,11 @@ export function useWallet() {
       const chainIdNum = typeof chainId === "string"
         ? (/^0x/.test(chainId) ? parseInt(chainId, 16) : parseInt(chainId, 10))
         : Number(chainId);
-      const chain = getChainInfo(Number.isNaN(chainIdNum) ? chainId : chainIdNum);
+      const chainLookupKey: string | number =
+        Number.isNaN(chainIdNum)
+          ? (typeof chainId === "string" || typeof chainId === "number" ? chainId : String(chainId))
+          : chainIdNum;
+      const chain = getChainInfo(chainLookupKey);
       const effectiveChainId = Number.isNaN(chainIdNum) ? (chain?.chainId ?? 0) : chainIdNum;
       setState((prev) => ({ ...prev, chainId: effectiveChainId, chain }));
     };
