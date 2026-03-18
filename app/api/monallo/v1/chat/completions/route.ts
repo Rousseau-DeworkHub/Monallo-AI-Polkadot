@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { ethers } from "ethers";
-import { getStoreUserByKeyHash, insertStoreUsageEvent, getStoreUsageSumByUserAndRange, spendStoreModelTokens } from "@/lib/db";
+import { getStoreUserByKeyHash, insertStoreUsageEvent, getStoreUsageSumByUserAndRange, spendStoreModelTokens, getStoreModelTokens } from "@/lib/db";
 import { getCostMonFromUsage, normalizeModelIdForBalance } from "@/lib/monalloProxy";
 import { getCreditBalance } from "@/lib/creditLedger";
 
@@ -38,12 +38,14 @@ function parseUsage(data: { usage?: { prompt_tokens?: number; completion_tokens?
   return { prompt: totalTokens, completion: 0, total: totalTokens };
 }
 
+/** availableMonRaw: max MON (raw, 1e6=1 MON) we can charge for this request; used to cap charged_mon. */
 function applyChargeAndInsert(
   user: { id: number },
   model: string,
   modelForBalance: string,
   prompt: number,
   completion: number,
+  availableMonRaw: number,
 ): void {
   const totalTokens = Math.max(0, prompt + completion);
   if (totalTokens <= 0) return;
@@ -55,6 +57,7 @@ function applyChargeAndInsert(
   const remainingCompletion = Math.max(0, completion - coverCompletion);
   let chargedMon = (totalTokens - chargedTokens) > 0 ? getCostMonFromUsage(model, remainingPrompt, remainingCompletion) : 0;
   if (chargedMon <= 0 && costMon > 0 && chargedTokens < totalTokens) chargedMon = costMon;
+  chargedMon = Math.min(chargedMon, Math.max(0, availableMonRaw));
   const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
   insertStoreUsageEvent({
     user_id: user.id,
@@ -82,21 +85,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
   }
 
-  let lowBalanceWarning: string | null = null;
-  if (CREDIT_LEDGER_ADDRESS && user.wallet_address) {
-    try {
-      const provider = new ethers.JsonRpcProvider(RPC);
-      const balanceMon = await getCreditBalance(provider, CREDIT_LEDGER_ADDRESS, user.wallet_address);
-      const now = Math.floor(Date.now() / 1000);
-      const d = new Date();
-      d.setUTCHours(0, 0, 0, 0);
-      const todayStart = Math.floor(d.getTime() / 1000);
-      const unsettledRaw = getStoreUsageSumByUserAndRange(user.id, todayStart, now);
-      const availableMon = balanceMon - unsettledRaw / 1e6;
-      if (availableMon < LOW_BALANCE_THRESHOLD_MON) lowBalanceWarning = BALANCE_WARNING;
-    } catch (_) {}
-  }
-
   let body: unknown;
   try {
     body = await request.json();
@@ -107,6 +95,32 @@ export async function POST(request: NextRequest) {
   const stream = !!obj.stream;
   const model = typeof obj.model === "string" ? obj.model : "default";
   const modelForBalance = normalizeModelIdForBalance(model);
+
+  let availableMonRaw = 0;
+  let lowBalanceWarning: string | null = null;
+  if (CREDIT_LEDGER_ADDRESS && user.wallet_address) {
+    try {
+      const provider = new ethers.JsonRpcProvider(RPC);
+      const balanceMon = await getCreditBalance(provider, CREDIT_LEDGER_ADDRESS, user.wallet_address);
+      const now = Math.floor(Date.now() / 1000);
+      const d = new Date();
+      d.setUTCHours(0, 0, 0, 0);
+      const todayStart = Math.floor(d.getTime() / 1000);
+      const unsettledRaw = getStoreUsageSumByUserAndRange(user.id, todayStart, now);
+      availableMonRaw = Math.max(0, Math.round(balanceMon * 1e6) - unsettledRaw);
+      const availableMon = balanceMon - unsettledRaw / 1e6;
+      if (availableMon < LOW_BALANCE_THRESHOLD_MON) lowBalanceWarning = BALANCE_WARNING;
+    } catch (_) {}
+  }
+
+  const modelTokenBalance = getStoreModelTokens(user.id, modelForBalance);
+  if (modelTokenBalance <= 0 && availableMonRaw <= 0) {
+    return NextResponse.json(
+      { error: "Insufficient balance. Please recharge or purchase model tokens before calling the API." },
+      { status: 402 }
+    );
+  }
+
   const url = HAODE_BASE_URL.replace(/\/$/, "") + "/v1/chat/completions";
 
   const headers: Record<string, string> = {
@@ -202,7 +216,7 @@ export async function POST(request: NextRequest) {
             } catch (_) {}
           }
           if (lastUsage) {
-            applyChargeAndInsert(user, model, modelForBalance, lastUsage.prompt, lastUsage.completion);
+            applyChargeAndInsert(user, model, modelForBalance, lastUsage.prompt, lastUsage.completion, availableMonRaw);
           }
           controller.close();
         },
@@ -219,7 +233,7 @@ export async function POST(request: NextRequest) {
     const data = (await res.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; [k: string]: unknown };
     const usageTriple = parseUsage(data as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } });
     if (usageTriple) {
-      applyChargeAndInsert(user, model, modelForBalance, usageTriple.prompt, usageTriple.completion);
+      applyChargeAndInsert(user, model, modelForBalance, usageTriple.prompt, usageTriple.completion, availableMonRaw);
     }
     const jsonHeaders = new Headers();
     if (lowBalanceWarning) jsonHeaders.set("X-Monallo-Warning", lowBalanceWarning);
