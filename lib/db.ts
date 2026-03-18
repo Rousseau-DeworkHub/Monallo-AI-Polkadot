@@ -420,6 +420,22 @@ export function getStoreModelTokens(userId: number, modelId: string): number {
   return Math.max(0, Number(row?.tokens ?? 0));
 }
 
+/** All model token balances for a user (source of truth for My Balance). */
+export function getStoreAllTokenBalancesByUserId(userId: number): Record<string, number> {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT model_id, tokens FROM store_token_balances WHERE user_id = ?"
+  ).all(userId) as { model_id: string; tokens: number }[];
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.model_id != null && r.model_id !== "") {
+      const t = Math.max(0, Number(r.tokens ?? 0));
+      if (t > 0) out[r.model_id] = t;
+    }
+  }
+  return out;
+}
+
 export function spendStoreModelTokens(userId: number, modelId: string, spendTokens: number): number {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);

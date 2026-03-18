@@ -1132,13 +1132,27 @@ export default function StorePage() {
     const chainId = getChainIdForPayment(chain.id);
     fetch(`/api/store/balance?wallet=${encodeURIComponent(address)}&chain_id=${chainId}`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (data && typeof data.balance_mon === "number") setChainBalanceMon(data.balance_mon); })
+      .then((data) => {
+        if (!data) return;
+        if (typeof data.balance_mon === "number") setChainBalanceMon(data.balance_mon);
+        if (data.balance_by_model && typeof data.balance_by_model === "object" && !Array.isArray(data.balance_by_model)) {
+          setBalanceByModel(data.balance_by_model as Record<string, number>);
+          if (typeof window !== "undefined" && address) {
+            localStorage.setItem(getBalanceKey(address), JSON.stringify(data.balance_by_model));
+          }
+        }
+      })
       .catch(() => setChainBalanceMon(null));
   }, [address, chain?.id]);
 
   useEffect(() => {
     if (address && chain?.id) fetchChainBalance();
   }, [address, chain?.id, fetchChainBalance]);
+
+  // Refetch balance when opening My Balance modal so token counts stay in sync after API usage from outside.
+  useEffect(() => {
+    if (showBalanceModal && address && chain?.id) fetchChainBalance();
+  }, [showBalanceModal, address, chain?.id, fetchChainBalance]);
 
   // When switching wallet or chain balance updates, reset optimistic spend for a clean view.
   useEffect(() => {
