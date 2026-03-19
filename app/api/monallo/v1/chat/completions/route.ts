@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { ethers } from "ethers";
-import { getStoreUserByKeyHash, insertStoreUsageEvent, getStoreUsageSumByUserAndRange, spendStoreModelTokens, getStoreModelTokens } from "@/lib/db";
+import {
+  getStoreUserByKeyHash,
+  insertStoreUsageEvent,
+  getStoreUsageSumByUserAndRange,
+  spendStoreModelTokens,
+  getStoreModelTokens,
+  setStoreUsageEventSettledMon,
+} from "@/lib/db";
 import { getCostMonFromUsage, normalizeModelIdForBalance } from "@/lib/monalloProxy";
-import { getCreditBalance } from "@/lib/creditLedger";
+import { getCreditBalance, settle } from "@/lib/creditLedger";
 
 const HAODE_BASE_URL = process.env.HAODE_BASE_URL ?? "";
 const HAODE_API_KEY = process.env.HAODE_API_KEY ?? "";
@@ -11,6 +18,7 @@ const RPC = process.env.RPC_Polkadot_Hub ?? process.env.POLKADOT_HUB_RPC_URL ?? 
 const CREDIT_LEDGER_ADDRESS = process.env.CREDIT_LEDGER_ADDRESS ?? "";
 const LOW_BALANCE_THRESHOLD_MON = 0.1;
 const BALANCE_WARNING = "Insufficient balance. Please recharge soon.";
+const STORE_OPERATOR_PRIVATE_KEY = process.env.STORE_OPERATOR_PRIVATE_KEY ?? "";
 
 function hashApiKey(key: string): string {
   return createHash("sha256").update(key.trim()).digest("hex");
@@ -46,9 +54,9 @@ function applyChargeAndInsert(
   prompt: number,
   completion: number,
   availableMonRaw: number,
-): void {
+): { usageEventId: number; chargedMonRaw: number } | null {
   const totalTokens = Math.max(0, prompt + completion);
-  if (totalTokens <= 0) return;
+  if (totalTokens <= 0) return null;
   const costMon = getCostMonFromUsage(model, prompt, completion);
   const chargedTokens = spendStoreModelTokens(user.id, modelForBalance, totalTokens);
   const coverPrompt = Math.min(prompt, chargedTokens);
@@ -59,7 +67,7 @@ function applyChargeAndInsert(
   if (chargedMon <= 0 && costMon > 0 && chargedTokens < totalTokens) chargedMon = costMon;
   chargedMon = Math.min(chargedMon, Math.max(0, availableMonRaw));
   const method = chargedTokens > 0 && chargedMon > 0 ? "mixed" : chargedTokens > 0 ? "token" : "mon";
-  insertStoreUsageEvent({
+  const usageEventId = insertStoreUsageEvent({
     user_id: user.id,
     model,
     prompt_tokens: prompt,
@@ -69,6 +77,13 @@ function applyChargeAndInsert(
     charged_mon: chargedMon,
     charge_method: method,
   });
+  return { usageEventId, chargedMonRaw: chargedMon };
+}
+
+function getUtcDateString(now = new Date()): string {
+  const d = new Date(now.getTime());
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
 }
 
 export async function POST(request: NextRequest) {
@@ -112,6 +127,27 @@ export async function POST(request: NextRequest) {
       if (availableMon < LOW_BALANCE_THRESHOLD_MON) lowBalanceWarning = BALANCE_WARNING;
     } catch (_) {}
   }
+
+  const tryImmediateSettle = async (usageEventId: number, chargedMonRaw: number) => {
+    try {
+      if (!CREDIT_LEDGER_ADDRESS || !STORE_OPERATOR_PRIVATE_KEY || !user.wallet_address) return;
+      if (chargedMonRaw <= 0) return;
+
+      const provider = new ethers.JsonRpcProvider(RPC);
+      const signer = new ethers.Wallet(STORE_OPERATOR_PRIVATE_KEY, provider);
+
+      const dayId = getUtcDateString();
+      const settlementId = `${user.wallet_address}_${dayId}_${usageEventId}`;
+      const userAddress = ethers.getAddress(user.wallet_address);
+      const amountMon = chargedMonRaw / 1e6; // convert raw(1e6) => MON
+
+      const { hash } = await settle(signer, CREDIT_LEDGER_ADDRESS, userAddress, amountMon, dayId, settlementId);
+      setStoreUsageEventSettledMon(usageEventId, chargedMonRaw, hash);
+    } catch (e) {
+      // If on-chain settle fails, leave settled_mon=0 so daily settlement-run can retry.
+      console.warn("Immediate MON settle failed", e);
+    }
+  };
 
   const modelTokenBalance = getStoreModelTokens(user.id, modelForBalance);
   if (modelTokenBalance <= 0 && availableMonRaw <= 0) {
@@ -216,7 +252,10 @@ export async function POST(request: NextRequest) {
             } catch (_) {}
           }
           if (lastUsage) {
-            applyChargeAndInsert(user, model, modelForBalance, lastUsage.prompt, lastUsage.completion, availableMonRaw);
+            const chargeRes = applyChargeAndInsert(user, model, modelForBalance, lastUsage.prompt, lastUsage.completion, availableMonRaw);
+            if (chargeRes && chargeRes.chargedMonRaw > 0) {
+              await tryImmediateSettle(chargeRes.usageEventId, chargeRes.chargedMonRaw);
+            }
           }
           controller.close();
         },
@@ -233,7 +272,10 @@ export async function POST(request: NextRequest) {
     const data = (await res.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }; [k: string]: unknown };
     const usageTriple = parseUsage(data as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } });
     if (usageTriple) {
-      applyChargeAndInsert(user, model, modelForBalance, usageTriple.prompt, usageTriple.completion, availableMonRaw);
+      const chargeRes = applyChargeAndInsert(user, model, modelForBalance, usageTriple.prompt, usageTriple.completion, availableMonRaw);
+      if (chargeRes && chargeRes.chargedMonRaw > 0) {
+        await tryImmediateSettle(chargeRes.usageEventId, chargeRes.chargedMonRaw);
+      }
     }
     const jsonHeaders = new Headers();
     if (lowBalanceWarning) jsonHeaders.set("X-Monallo-Warning", lowBalanceWarning);

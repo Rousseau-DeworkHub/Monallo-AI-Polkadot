@@ -137,7 +137,13 @@ export async function POST(request: NextRequest) {
     const { hash } = await mintCredit(signer, contractAddress, userAddress, amountMon);
 
     getOrCreateStoreUser(walletAddress);
-    insertStoreCreditMint({ tx_hash: txHash, chain_id: chainId, wallet_address: walletAddress.toLowerCase(), amount_mon: Math.round(amountMon * 1e6) });
+    insertStoreCreditMint({
+      tx_hash: txHash,
+      mint_tx_hash: hash,
+      chain_id: chainId,
+      wallet_address: walletAddress.toLowerCase(),
+      amount_mon: Math.round(amountMon * 1e6),
+    });
 
     return NextResponse.json({ ok: true, mint_tx_hash: hash });
   } catch (e) {

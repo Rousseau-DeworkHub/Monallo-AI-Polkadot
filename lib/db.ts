@@ -113,6 +113,11 @@ function getDb(): Database.Database {
       cost_mon INTEGER NOT NULL DEFAULT 0,
       charged_tokens INTEGER NOT NULL DEFAULT 0,
       charged_mon INTEGER NOT NULL DEFAULT 0,
+      -- How much of charged_mon has already been settled on-chain.
+      -- Used to prevent double-settling in the daily settlement job.
+      settled_mon INTEGER NOT NULL DEFAULT 0,
+      -- On-chain settle tx hash for the settled_mon portion.
+      settle_tx_hash TEXT,
       charge_method TEXT NOT NULL DEFAULT 'mon',
       created_at INTEGER NOT NULL,
       FOREIGN KEY (user_id) REFERENCES store_users(id)
@@ -145,6 +150,7 @@ function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS store_credit_mints (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tx_hash TEXT NOT NULL,
+      mint_tx_hash TEXT,
       chain_id INTEGER NOT NULL,
       wallet_address TEXT NOT NULL,
       amount_mon INTEGER NOT NULL,
@@ -161,6 +167,9 @@ function getDb(): Database.Database {
   try { db.exec("ALTER TABLE store_api_keys ADD COLUMN key_last4 TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charged_tokens INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
   try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charged_mon INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN settled_mon INTEGER NOT NULL DEFAULT 0"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN settle_tx_hash TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_credit_mints ADD COLUMN mint_tx_hash TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charge_method TEXT NOT NULL DEFAULT 'mon'"); } catch (_) {}
   return db;
 }
@@ -176,6 +185,8 @@ export interface StorePurchaseRow {
   token: string;
   amount_usd: number;
   tx_hash: string | null;
+  // Recharge: mintCredit() on-chain tx hash (optional; may be null for legacy rows).
+  mint_tx_hash?: string | null;
   chain_id: number;
   created_at: number;
 }
@@ -216,7 +227,13 @@ export function insertStorePurchase(row: {
 export function listStorePurchases(walletAddress: string, limit = 100): StorePurchaseRow[] {
   const db = getDb();
   const stmt = db.prepare(
-    "SELECT * FROM store_purchases WHERE wallet_address = ? ORDER BY created_at DESC LIMIT ?"
+    `SELECT p.*, c.mint_tx_hash AS mint_tx_hash
+     FROM store_purchases p
+     LEFT JOIN store_credit_mints c
+       ON c.tx_hash = p.tx_hash AND c.chain_id = p.chain_id
+     WHERE p.wallet_address = ?
+     ORDER BY p.created_at DESC
+     LIMIT ?`
   );
   return stmt.all(walletAddress, limit) as StorePurchaseRow[];
 }
@@ -382,11 +399,11 @@ export function insertStoreUsageEvent(row: {
   charged_tokens?: number;
   charged_mon?: number;
   charge_method?: "token" | "mon" | "mixed";
-}): void {
+}): number {
   const db = getDb();
   const created_at = Math.floor(Date.now() / 1000);
   db.prepare(
-    "INSERT INTO store_usage_events (user_id, model, prompt_tokens, completion_tokens, cost_mon, charged_tokens, charged_mon, charge_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO store_usage_events (user_id, model, prompt_tokens, completion_tokens, cost_mon, charged_tokens, charged_mon, settled_mon, settle_tx_hash, charge_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     row.user_id,
     row.model,
@@ -395,9 +412,25 @@ export function insertStoreUsageEvent(row: {
     row.cost_mon,
     row.charged_tokens ?? 0,
     row.charged_mon ?? row.cost_mon,
+    0, // settled_mon
+    null, // settle_tx_hash
     row.charge_method ?? "mon",
     created_at
   );
+  const idRow = db.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
+  return idRow.id;
+}
+
+export function setStoreUsageEventSettledMon(usageEventId: number, settledMonRaw: number, settleTxHash?: string | null): void {
+  const db = getDb();
+  const id = Math.max(0, Math.floor(usageEventId));
+  const amt = Math.max(0, Math.floor(settledMonRaw));
+  if (!id) return;
+  if (settleTxHash) {
+    db.prepare("UPDATE store_usage_events SET settled_mon = ?, settle_tx_hash = ? WHERE id = ?").run(amt, settleTxHash, id);
+    return;
+  }
+  db.prepare("UPDATE store_usage_events SET settled_mon = ? WHERE id = ?").run(amt, id);
 }
 
 export function addStoreModelTokens(userId: number, modelId: string, deltaTokens: number): void {
@@ -467,7 +500,7 @@ export function spendStoreModelTokens(userId: number, modelId: string, spendToke
 export function getStoreUsageSumByUserAndRange(userId: number, startTs: number, endTs: number): number {
   const db = getDb();
   const row = db.prepare(
-    "SELECT COALESCE(SUM(charged_mon), 0) as total FROM store_usage_events WHERE user_id = ? AND created_at >= ? AND created_at < ?"
+    "SELECT COALESCE(SUM(charged_mon - settled_mon), 0) as total FROM store_usage_events WHERE user_id = ? AND created_at >= ? AND created_at < ?"
   ).get(userId, startTs, endTs) as { total: number };
   return Number(row?.total ?? 0);
 }
@@ -479,7 +512,7 @@ export function getStoreUsersWithUsageInRange(
 ): { user_id: number; wallet_address: string; usage_mon: number }[] {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT u.id AS user_id, u.wallet_address, COALESCE(SUM(e.charged_mon), 0) AS usage_mon
+    `SELECT u.id AS user_id, u.wallet_address, COALESCE(SUM(e.charged_mon - e.settled_mon), 0) AS usage_mon
      FROM store_users u
      INNER JOIN store_usage_events e ON u.id = e.user_id
      WHERE e.created_at >= ? AND e.created_at < ?
@@ -493,17 +526,39 @@ export function getStoreUsersWithUsageInRange(
 export function listStoreUsageEventsByWallet(
   walletAddress: string,
   limit = 100
-): { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[] {
+): {
+  id: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_mon: number;
+  charged_tokens: number;
+  charged_mon: number;
+  charge_method: string;
+  settle_tx_hash: string | null;
+  created_at: number;
+}[] {
   const db = getDb();
   const normalized = walletAddress.trim().toLowerCase();
   const rows = db.prepare(
-    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.charged_tokens, e.charged_mon, e.charge_method, e.created_at
+    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.charged_tokens, e.charged_mon, e.charge_method, e.settle_tx_hash, e.created_at
      FROM store_usage_events e
      INNER JOIN store_users u ON u.id = e.user_id
      WHERE u.wallet_address = ?
      ORDER BY e.created_at DESC
      LIMIT ?`
-  ).all(normalized, limit) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
+  ).all(normalized, limit) as {
+    id: number;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_mon: number;
+    charged_tokens: number;
+    charged_mon: number;
+    charge_method: string;
+    settle_tx_hash: string | null;
+    created_at: number;
+  }[];
   return rows;
 }
 
@@ -566,6 +621,7 @@ export function isStoreCreditMinted(txHash: string, chainId: number): boolean {
 
 export function insertStoreCreditMint(row: {
   tx_hash: string;
+  mint_tx_hash: string;
   chain_id: number;
   wallet_address: string;
   amount_mon: number;
@@ -573,8 +629,8 @@ export function insertStoreCreditMint(row: {
   const db = getDb();
   const created_at = Math.floor(Date.now() / 1000);
   db.prepare(
-    "INSERT INTO store_credit_mints (tx_hash, chain_id, wallet_address, amount_mon, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(row.tx_hash, row.chain_id, row.wallet_address, row.amount_mon, created_at);
+    "INSERT INTO store_credit_mints (tx_hash, mint_tx_hash, chain_id, wallet_address, amount_mon, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(row.tx_hash, row.mint_tx_hash, row.chain_id, row.wallet_address, row.amount_mon, created_at);
 }
 
 export interface BridgeUnlockRow {

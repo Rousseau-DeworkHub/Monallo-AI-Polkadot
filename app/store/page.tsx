@@ -90,6 +90,7 @@ export interface PurchaseRecord {
   token: string;
   amountUsd: number;
   txHash?: string;
+  mintTxHash?: string;
   chainId: number;
 }
 
@@ -273,7 +274,7 @@ function BalanceModal({
             <section className="mb-6">
               <div className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 mb-2">Recharge balance</div>
               <div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
-                <div className="text-2xl font-bold text-white">{rechargeBalanceMon.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-lg font-semibold text-gray-400">MON</span></div>
+                <div className="text-2xl font-bold text-white">{rechargeBalanceMon.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 })} <span className="text-lg font-semibold text-gray-400">MON</span></div>
                 <div className="text-xs text-gray-500 mt-0.5">1 USD = 1 MON</div>
               </div>
             </section>
@@ -784,7 +785,7 @@ function ApiKeyModal({
   );
 }
 
-/** Full history modal: Purchase history, Consumption history, Model call records */
+/** Full history modal: Purchase history, Consumption history */
 function HistoryModal({
   isOpen,
   onClose,
@@ -797,28 +798,25 @@ function HistoryModal({
   onClose: () => void;
   loading: boolean;
   purchaseHistory: PurchaseRecord[];
-  consumptionHistory: { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
+  consumptionHistory: { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[];
   models: LLMModelInfo[];
 }) {
-  const [tab, setTab] = useState<"purchase" | "consumption" | "calls">("purchase");
+  const [tab, setTab] = useState<"purchase" | "consumption">("purchase");
   const salesNameById = useRef<Record<string, string>>({});
   useEffect(() => {
     salesNameById.current = Object.fromEntries((models ?? []).map((m) => [m.id, m.name]));
   }, [models]);
   const PAGE_SIZE = 10;
   const [consumptionPage, setConsumptionPage] = useState(1);
-  const [callsPage, setCallsPage] = useState(1);
 
   useEffect(() => {
     if (!isOpen) return;
     setTab("purchase");
     setConsumptionPage(1);
-    setCallsPage(1);
   }, [isOpen]);
 
   useEffect(() => {
     if (tab === "consumption") setConsumptionPage(1);
-    if (tab === "calls") setCallsPage(1);
   }, [tab]);
 
   const consumptionTotalPages = Math.max(1, Math.ceil(consumptionHistory.length / PAGE_SIZE));
@@ -826,54 +824,46 @@ function HistoryModal({
   const consumptionStart = (consumptionPageClamped - 1) * PAGE_SIZE;
   const consumptionRows = consumptionHistory.slice(consumptionStart, consumptionStart + PAGE_SIZE);
 
-  const callsTotalPages = Math.max(1, Math.ceil(consumptionHistory.length / PAGE_SIZE));
-  const callsPageClamped = Math.min(callsTotalPages, Math.max(1, callsPage));
-  const callsStart = (callsPageClamped - 1) * PAGE_SIZE;
-  const callsRows = consumptionHistory.slice(callsStart, callsStart + PAGE_SIZE);
-
-  const Pagination = ({
-    page,
-    totalPages,
-    onPrev,
-    onNext,
-  }: {
+  const Pagination = (props: {
     page: number;
     totalPages: number;
     onPrev: () => void;
     onNext: () => void;
-  }) => (
-    <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06] bg-white/[0.02]">
-      <button
-        type="button"
-        onClick={onPrev}
-        disabled={page <= 1}
-        className={`px-3 py-1.5 rounded-xl text-sm border transition ${
-          page <= 1 ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
-        }`}
-      >
-        Prev
-      </button>
-      <div className="text-xs text-gray-500">
-        Page <span className="text-gray-200">{page}</span> / <span className="text-gray-200">{totalPages}</span>
+  }) => {
+    const { page, totalPages, onPrev, onNext } = props;
+    return (
+      <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.06] bg-white/[0.02]">
+        <button
+          type="button"
+          onClick={onPrev}
+          disabled={page <= 1}
+          className={`px-3 py-1.5 rounded-xl text-sm border transition ${
+            page <= 1 ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
+          }`}
+        >
+          Prev
+        </button>
+        <div className="text-xs text-gray-500">
+          Page <span className="text-gray-200">{page}</span> / <span className="text-gray-200">{totalPages}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={page >= totalPages}
+          className={`px-3 py-1.5 rounded-xl text-sm border transition ${
+            page >= totalPages ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
+          }`}
+        >
+          Next
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={onNext}
-        disabled={page >= totalPages}
-        className={`px-3 py-1.5 rounded-xl text-sm border transition ${
-          page >= totalPages ? "border-white/10 text-gray-600 bg-white/[0.02] cursor-not-allowed" : "border-white/10 text-gray-200 hover:bg-white/10"
-        }`}
-      >
-        Next
-      </button>
-    </div>
-  );
+    );
+  };
+  if (!isOpen) return null;
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-4xl max-h-[85vh] flex flex-col bg-[#0d0d14] border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="relative w-full max-w-4xl max-h-[85vh] flex flex-col bg-[#0d0d14] border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08] shrink-0">
               <div className="flex items-center gap-2">
                 <History className="w-5 h-5 text-[#F68521]" />
@@ -905,17 +895,6 @@ function HistoryModal({
               >
                 Consumption history
               </button>
-              <button
-                type="button"
-                onClick={() => setTab("calls")}
-                className={`px-3 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  tab === "calls"
-                    ? "border-[#F68521] text-white"
-                    : "border-transparent text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                Model call records
-              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
               {loading ? (
@@ -927,45 +906,95 @@ function HistoryModal({
                   {purchaseHistory.length === 0 ? (
                     <p className="px-4 py-6 text-sm text-gray-500 text-center">No purchases yet.</p>
                   ) : (
-                    <ul className="divide-y divide-white/[0.06]">
-                      {purchaseHistory.map((r) => (
-                        <li key={r.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-                          <div className="flex flex-col gap-0.5">
-                            <span className="font-medium text-white flex items-center gap-2 min-w-0">
-                              <span
-                                className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full border shrink-0 ${
-                                  r.kind === "recharge"
-                                    ? "text-[#14F195] border-[#14F195]/30 bg-[#14F195]/10"
-                                    : "text-[#F68521] border-[#F68521]/30 bg-[#F68521]/10"
-                                }`}
-                              >
-                                {r.kind === "recharge" ? "Recharge" : "Package"}
-                              </span>
-                              <span className="truncate">{r.modelName}</span>
-                            </span>
-                            <span className="text-gray-500 text-xs">
-                              {r.kind === "recharge" ? `+${r.amountUsd.toFixed(2)} MON` : `${r.tokenCount.toLocaleString()} tokens`} · {new Date(r.timestamp).toLocaleString()}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <span className="text-white">{r.amount} {r.token}</span>
-                            {r.txHash && EXPLORER_BY_CHAIN_ID[r.chainId] && (
-                              <a
-                                href={`${EXPLORER_BY_CHAIN_ID[r.chainId]}/tx/${r.txHash}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[#F68521] hover:underline flex items-center gap-1 text-xs"
-                              >
-                                Tx <ExternalLink className="w-3 h-3" />
-                              </a>
-                            )}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="w-full overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-white/[0.02]">
+                          <tr className="text-xs uppercase tracking-widest text-gray-500">
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Type</th>
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Model</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Amount</th>
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Payment Tx</th>
+                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Mint Tx</th>
+                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Time</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.06]">
+                          {purchaseHistory.map((r) => (
+                            <tr key={r.id} className="text-gray-300">
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span
+                                  className={`text-[10px] font-semibold uppercase tracking-widest px-2 py-0.5 rounded-full border ${
+                                    r.kind === "recharge"
+                                      ? "text-[#14F195] border-[#14F195]/30 bg-[#14F195]/10"
+                                      : "text-[#F68521] border-[#F68521]/30 bg-[#F68521]/10"
+                                  }`}
+                                >
+                                  {r.kind === "recharge" ? "Recharge" : "Package"}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className="text-white font-medium truncate block max-w-[220px]" title={r.modelName}>
+                                  {r.modelName}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-right whitespace-nowrap">
+                                {r.kind === "recharge" ? (
+                                  <span className="text-white font-medium">
+                                    +{r.amountUsd.toFixed(2)} MON
+                                  </span>
+                                ) : (
+                                  <span className="text-white font-medium">{r.tokenCount.toLocaleString()} tokens</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {r.txHash && EXPLORER_BY_CHAIN_ID[r.chainId] ? (
+                                  <a
+                                    href={`${EXPLORER_BY_CHAIN_ID[r.chainId]}/tx/${r.txHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[#F68521] hover:underline inline-flex items-center gap-1 text-xs max-w-[230px]"
+                                    title={r.txHash}
+                                  >
+                                    <span className="font-mono truncate">{r.txHash.slice(0, 8)}…{r.txHash.slice(-6)}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </a>
+                                ) : (
+                                  <span className="text-gray-500">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {r.kind === "recharge" && r.mintTxHash && EXPLORER_BY_CHAIN_ID[r.chainId] ? (
+                                  <a
+                                    href={`${EXPLORER_BY_CHAIN_ID[r.chainId]}/tx/${r.mintTxHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[#14F195] hover:underline inline-flex items-center gap-1 text-xs max-w-[230px]"
+                                    title={r.mintTxHash}
+                                  >
+                                    <span className="font-mono truncate">{r.mintTxHash.slice(0, 8)}…{r.mintTxHash.slice(-6)}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </a>
+                                ) : (
+                                  r.kind === "package" ? (
+                                    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-gray-300 whitespace-nowrap">
+                                      Off-chain acceleration
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-500">—</span>
+                                  )
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">
+                                {new Date(r.timestamp).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
-              ) : tab === "consumption" ? (
+              ) : (
                 <div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] overflow-hidden">
                   {consumptionHistory.length === 0 ? (
                     <p className="px-4 py-6 text-sm text-gray-500 text-center">No consumption records yet.</p>
@@ -992,7 +1021,42 @@ function HistoryModal({
                               <td className="px-4 py-3 text-right whitespace-nowrap">{(c.prompt_tokens + c.completion_tokens).toLocaleString()}</td>
                               <td className="px-4 py-3 text-right whitespace-nowrap text-gray-200">{(c.charged_mon / 1e6).toFixed(6)}</td>
                               <td className="px-4 py-3 whitespace-nowrap text-gray-400">
-                                {c.charge_method === "token" ? "Package" : c.charge_method === "mixed" ? "Package + MON" : "MON"}
+                                {c.charge_method === "token" ? (
+                                  "Package"
+                                ) : c.charge_method === "mixed" ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    Package +
+                                    <span className="inline-flex items-center gap-1">
+                                      MON
+                                      {c.settle_tx_hash && EXPLORER_BY_CHAIN_ID[420420417] && (
+                                        <a
+                                          href={`${EXPLORER_BY_CHAIN_ID[420420417]}/tx/${c.settle_tx_hash}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center hover:text-white"
+                                          title={c.settle_tx_hash}
+                                        >
+                                          <ExternalLink className="w-3 h-3 shrink-0" />
+                                        </a>
+                                      )}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1">
+                                    MON
+                                    {c.settle_tx_hash && EXPLORER_BY_CHAIN_ID[420420417] && (
+                                      <a
+                                        href={`${EXPLORER_BY_CHAIN_ID[420420417]}/tx/${c.settle_tx_hash}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center hover:text-white"
+                                        title={c.settle_tx_hash}
+                                      >
+                                        <ExternalLink className="w-3 h-3 shrink-0" />
+                                      </a>
+                                    )}
+                                  </span>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">{new Date(c.created_at * 1000).toLocaleString()}</td>
                             </tr>
@@ -1010,57 +1074,10 @@ function HistoryModal({
                     />
                   )}
                 </div>
-              ) : (
-                <div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] overflow-hidden">
-                  {consumptionHistory.length === 0 ? (
-                    <p className="px-4 py-6 text-sm text-gray-500 text-center">No model call records yet.</p>
-                  ) : (
-                    <div className="w-full overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-white/[0.02]">
-                          <tr className="text-xs uppercase tracking-widest text-gray-500">
-                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Model</th>
-                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Prompt</th>
-                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Completion</th>
-                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Total</th>
-                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Est. MON</th>
-                            <th className="text-left font-semibold px-4 py-3 whitespace-nowrap">Charge</th>
-                            <th className="text-right font-semibold px-4 py-3 whitespace-nowrap">Time</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/[0.06]">
-                          {callsRows.map((c) => (
-                            <tr key={c.id} className="text-gray-300">
-                              <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{salesNameById.current[c.model] ?? c.model}</td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.prompt_tokens.toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap">{c.completion_tokens.toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap">{(c.prompt_tokens + c.completion_tokens).toLocaleString()}</td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap text-gray-200">{(c.charged_mon / 1e6).toFixed(6)}</td>
-                              <td className="px-4 py-3 whitespace-nowrap text-gray-400">
-                                {c.charge_method === "token" ? "Package" : c.charge_method === "mixed" ? "Package + MON" : "MON"}
-                              </td>
-                              <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">{new Date(c.created_at * 1000).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  {consumptionHistory.length > 0 && (
-                    <Pagination
-                      page={callsPageClamped}
-                      totalPages={callsTotalPages}
-                      onPrev={() => setCallsPage((p) => Math.max(1, p - 1))}
-                      onNext={() => setCallsPage((p) => Math.min(callsTotalPages, p + 1))}
-                    />
-                  )}
-                </div>
               )}
             </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1106,7 +1123,7 @@ export default function StorePage() {
   const [paymentTokenPriceUsd, setPaymentTokenPriceUsd] = useState<number | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [purchaseHistory, setPurchaseHistory] = useState<PurchaseRecord[]>([]);
-  const [consumptionHistory, setConsumptionHistory] = useState<{ id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[]>([]);
+  const [consumptionHistory, setConsumptionHistory] = useState<{ id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[]>([]);
   const [recordIndex, setRecordIndex] = useState(0);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1162,7 +1179,19 @@ export default function StorePage() {
     try {
       const res = await fetch(`/api/store/purchases?address=${encodeURIComponent(address.trim())}&limit=100`);
       if (!res.ok) return;
-      const rows = (await res.json()) as { id: number; kind?: string; model_name: string; token_count: number; amount: string; token: string; amount_usd: number; tx_hash: string | null; chain_id: number; created_at: number }[];
+      const rows = (await res.json()) as {
+        id: number;
+        kind?: string;
+        model_name: string;
+        token_count: number;
+        amount: string;
+        token: string;
+        amount_usd: number;
+        tx_hash: string | null;
+        mint_tx_hash?: string | null;
+        chain_id: number;
+        created_at: number;
+      }[];
       setPurchaseHistory(
         (Array.isArray(rows) ? rows : []).map((r) => ({
           id: String(r.id),
@@ -1174,6 +1203,7 @@ export default function StorePage() {
           token: r.token,
           amountUsd: r.amount_usd,
           txHash: r.tx_hash ?? undefined,
+          mintTxHash: r.mint_tx_hash ?? undefined,
           chainId: r.chain_id,
         }))
       );
@@ -1187,7 +1217,7 @@ export default function StorePage() {
     try {
       const res = await fetch(`/api/store/usage?address=${encodeURIComponent(address.trim())}&limit=100`);
       if (!res.ok) return;
-      const rows = (await res.json()) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; created_at: number }[];
+      const rows = (await res.json()) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[];
       setConsumptionHistory(Array.isArray(rows) ? rows : []);
     } catch (_) {
       setConsumptionHistory([]);
@@ -2038,7 +2068,7 @@ export default function StorePage() {
                   </div>
                   {currentRecord.txHash && EXPLORER_BY_CHAIN_ID[currentRecord.chainId] && (
                     <div className="flex justify-between items-center gap-2 text-xs pt-1 border-t border-white/[0.06]">
-                      <span className="text-gray-500">Tx</span>
+                      <span className="text-gray-500">Transfer Tx</span>
                       <a
                         href={`${EXPLORER_BY_CHAIN_ID[currentRecord.chainId]}/tx/${currentRecord.txHash}`}
                         target="_blank"
@@ -2051,6 +2081,23 @@ export default function StorePage() {
                       </a>
                     </div>
                   )}
+                  {currentRecord.kind === "recharge" &&
+                    currentRecord.mintTxHash &&
+                    EXPLORER_BY_CHAIN_ID[currentRecord.chainId] && (
+                      <div className="flex justify-between items-center gap-2 text-xs pt-1 border-t border-white/[0.06]">
+                        <span className="text-gray-500">Mint Tx</span>
+                        <a
+                          href={`${EXPLORER_BY_CHAIN_ID[currentRecord.chainId]}/tx/${currentRecord.mintTxHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-[#14F195] hover:underline truncate max-w-[140px] flex items-center gap-1"
+                          title={currentRecord.mintTxHash}
+                        >
+                          {currentRecord.mintTxHash.slice(0, 8)}…{currentRecord.mintTxHash.slice(-6)}
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                        </a>
+                      </div>
+                    )}
                 </div>
               )}
             </div>
