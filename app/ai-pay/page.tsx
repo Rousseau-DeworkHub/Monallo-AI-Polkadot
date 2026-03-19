@@ -1532,8 +1532,9 @@ export default function AIPayPage() {
         });
         const explorerUrl = targetChainForSend.explorer ? `${targetChainForSend.explorer}/tx/${txHash}` : undefined;
         const receiptText = `Sent ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || "ETH"} to ${formatAddressShort(receiver)} ✓`;
-        setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
-          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, content: receiptText, intentConfirmed: true, txHash, explorerUrl };
+        setMessages(prev => prev.map(m => {
+          if (m.status === "pending") return { ...m, content: receiptText, intentConfirmed: true, intent: pendingIntent, txHash, explorerUrl, status: undefined };
+          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, intentConfirmed: true };
           return m;
         }));
         setTxCount(c => c + 1);
@@ -1560,8 +1561,9 @@ export default function AIPayPage() {
         fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain.chainId, sourceTxHash: txHash }) }).catch(() => {});
         const explorerUrl = bridgeSourceChain.explorer ? `${bridgeSourceChain.explorer}/tx/${txHash}` : undefined;
         const receiptText = `Unlocked ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || ""} → ${bridgeTargetChain.name}. Waiting for relay. ✓`;
-        setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
-          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, content: receiptText, intentConfirmed: true, txHash, explorerUrl, bridgeSourceLabel: "Unlock", bridgeDestLabel: "Release" };
+        setMessages(prev => prev.map(m => {
+          if (m.status === "pending") return { ...m, content: receiptText, intentConfirmed: true, intent: pendingIntent, txHash, explorerUrl, bridgeSourceLabel: "Unlock", bridgeDestLabel: "Release", status: undefined };
+          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, intentConfirmed: true };
           return m;
         }));
         pollBridgeStatusAndUpdateMessage(txHash, bridgeSourceChain.chainId, bridgeTargetChain.explorer ?? "", "Unlock", "Release");
@@ -1587,8 +1589,9 @@ export default function AIPayPage() {
         fetch("/api/bridge/trigger-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceChainId: bridgeSourceChain!.chainId, sourceTxHash: txHash }) }).catch(() => {});
         const explorerUrl = bridgeSourceChain!.explorer ? `${bridgeSourceChain!.explorer}/tx/${txHash}` : undefined;
         const receiptText = `Locked ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || "ETH"} → ${bridgeTargetChain!.name}. Waiting for relay. ✓`;
-        setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
-          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, content: receiptText, intentConfirmed: true, txHash, explorerUrl, bridgeSourceLabel: "Lock", bridgeDestLabel: "Mint" };
+        setMessages(prev => prev.map(m => {
+          if (m.status === "pending") return { ...m, content: receiptText, intentConfirmed: true, intent: pendingIntent, txHash, explorerUrl, bridgeSourceLabel: "Lock", bridgeDestLabel: "Mint", status: undefined };
+          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, intentConfirmed: true };
           return m;
         }));
         pollBridgeStatusAndUpdateMessage(txHash, bridgeSourceChain!.chainId, bridgeTargetChain!.explorer ?? "", "Lock", "Mint");
@@ -1602,8 +1605,9 @@ export default function AIPayPage() {
         await new Promise(r => setTimeout(r, 1500));
         const txHash = "0x" + Math.random().toString(16).slice(2, 66);
         const receiptTextMock = `Sent ${pendingIntent.amount} ${pendingIntent.token || pendingIntent.from_token || "ETH"} to ${formatAddressShort(receiver)} ✓`;
-        setMessages(prev => prev.filter(m => m.status !== "pending").map(m => {
-          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, content: receiptTextMock, intentConfirmed: true, txHash };
+        setMessages(prev => prev.map(m => {
+          if (m.status === "pending") return { ...m, content: receiptTextMock, intentConfirmed: true, intent: pendingIntent, txHash, status: undefined };
+          if (m.intent && pendingIntent && m.intent.action === pendingIntent.action && m.intent.amount === pendingIntent.amount && (m.intent.receiver === pendingIntent.receiver || !pendingIntent.receiver?.trim())) return { ...m, intentConfirmed: true };
           return m;
         }));
         setTxCount(c => c + 1);
