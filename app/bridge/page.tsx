@@ -553,7 +553,7 @@ export default function BridgePage() {
 
           <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8">
             {/* From / To: card selectors + swap */}
-            <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-end">
+            <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
               <ChainSelectCard
                 label="From"
                 chainId={sourceChainId}
@@ -567,7 +567,7 @@ export default function BridgePage() {
                   setSourceChainId(targetChainId);
                   setTargetChainId(sourceChainId);
                 }}
-                className="mb-2 p-2.5 rounded-xl bg-white/[0.06] border border-white/10 hover:bg-white/10 hover:border-[#14F195]/30 transition-all text-gray-400 hover:text-[#14F195]"
+                className="p-2.5 rounded-xl bg-white/[0.06] border border-white/10 hover:bg-white/10 hover:border-[#14F195]/30 transition-all text-gray-400 hover:text-[#14F195] translate-y-[13px]"
                 title="Swap direction"
               >
                 <ArrowUpDown className="w-5 h-5" />
