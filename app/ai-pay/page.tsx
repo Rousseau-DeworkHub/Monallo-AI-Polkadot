@@ -82,7 +82,7 @@ const TOKENS_BY_CHAIN: Record<string, TokenBalance[]> = {
 const quickActions = [
   { label: "Send", icon: Send, color: "from-[#9945FF] to-[#B45AFF]", description: "Transfer" },
   { label: "Bridge", icon: Layers, color: "from-[#B45AFF] to-[#FF4D9E]", description: "Cross-chain" },
-  { label: "Stake", icon: TrendingUp, color: "from-[#F68521] to-[#FFB347]", description: "Rewards" },
+  { label: "Stake", icon: TrendingUp, color: "from-[#F68521] to-[#FFB347]", description: "Rewards", comingSoon: true },
 ];
 
 const BOT_NAME_KEY = "monallo_bot_name";
@@ -1800,15 +1800,21 @@ export default function AIPayPage() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.1 + i * 0.05 }}
-                whileHover={{ y: -4 }}
-                onClick={() => handleQuickAction(action.label)}
-                className="group flex flex-col items-center justify-center text-center p-6 rounded-2xl bg-[#0d0d14] border border-white/5 hover:border-white/20 min-h-[140px]"
+                whileHover={action.comingSoon ? undefined : { y: -4 }}
+                onClick={() => !action.comingSoon && handleQuickAction(action.label)}
+                className={`group flex flex-col items-center justify-center text-center p-6 rounded-2xl bg-[#0d0d14] border border-white/5 min-h-[140px] ${action.comingSoon ? "opacity-80 cursor-default" : "hover:border-white/20"}`}
               >
                 <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${action.color} flex items-center justify-center mb-4 shrink-0`}>
                   <action.icon className="w-7 h-7 text-white" />
                 </div>
                 <span className="font-bold text-white block mb-1">{action.label}</span>
-                <span className="text-sm text-gray-500">{action.description}</span>
+                {action.comingSoon ? (
+                  <span className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-[#9945FF]/15 text-[#B45AFF] border border-[#9945FF]/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#B45AFF] animate-pulse" /> Coming Soon
+                  </span>
+                ) : (
+                  <span className="text-sm text-gray-500">{action.description}</span>
+                )}
               </motion.button>
             ))}
             <motion.div

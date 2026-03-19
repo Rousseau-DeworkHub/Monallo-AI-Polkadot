@@ -29,7 +29,7 @@ const statsLabels = [
 const roadmap = [
   { phase: "Phase 1", title: "Foundation", items: ["AI Pay", "EVM Support", "MetaMask"], status: "completed" },
   { phase: "Phase 2", title: "Expansion", items: ["PVM Support", "Bridge", "Mobile"], status: "completed" },
-  { phase: "Phase 3", title: "Growth", items: ["LLM Token Store", "NFT Market", "DAO"], status: "planned" },
+  { phase: "Phase 3", title: "Growth", items: ["LLM Token Store", "Agent Market", "DAO"], completedItems: ["LLM Token Store"], status: "planned" },
   { phase: "Phase 4", title: "Ecosystem", items: ["DeFi Agg", "Launchpad", "DEX"], status: "planned" }
 ];
 
@@ -215,12 +215,15 @@ export default function Home() {
                 <div className={`text-xs px-3 py-1 rounded-full inline-block mb-3 ${r.status === 'completed' ? 'bg-green-500/20 text-green-400' : r.status === 'in-progress' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>{r.phase}</div>
                 <h3 className="font-bold mb-3">{r.title}</h3>
                 <ul className="space-y-2">
-                  {r.items.map((item, j) => (
-                    <li key={j} className="text-sm text-gray-500 flex items-center gap-2">
-                      {r.status === 'completed' ? <span className="text-green-400">✓</span> : r.status === 'in-progress' ? <span className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" /> : <span className="w-3 h-3 rounded-full border border-gray-500" />}
-                      {item}
-                    </li>
-                  ))}
+                  {r.items.map((item, j) => {
+                    const isItemDone = 'completedItems' in r && Array.isArray((r as { completedItems?: string[] }).completedItems) && (r as { completedItems: string[] }).completedItems.includes(item);
+                    return (
+                      <li key={j} className={`text-sm flex items-center gap-2 ${isItemDone ? 'text-green-400' : 'text-gray-500'}`}>
+                        {r.status === 'completed' || isItemDone ? <span className="text-green-400">✓</span> : r.status === 'in-progress' ? <span className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" /> : <span className="w-3 h-3 rounded-full border border-gray-500" />}
+                        {item}
+                      </li>
+                    );
+                  })}
                 </ul>
               </motion.div>
             ))}
