@@ -35,8 +35,14 @@ function loadEnv() {
 
 loadEnv();
 
-const MINIMAX_API_URL = "https://api.minimaxi.com/v1/text/chatcompletion_v2";
-const MODEL = "M2-her";
+const MINIMAX_API_URL =
+  process.env.MINIMAX_API_URL?.trim() || "https://api.minimaxi.com/v1/text/chatcompletion_v2";
+const MODEL = process.env.MINIMAX_MODEL?.trim() || "MiniMax-M2.7";
+const TEMP = Number(process.env.MINIMAX_TEMPERATURE);
+const temperature = Number.isFinite(TEMP) && TEMP >= 0 && TEMP <= 1 ? TEMP : 0.3;
+const MAX_TOK = Number(process.env.MINIMAX_MAX_COMPLETION_TOKENS);
+const max_completion_tokens =
+  Number.isFinite(MAX_TOK) && MAX_TOK >= 64 && MAX_TOK <= 16384 ? Math.floor(MAX_TOK) : 2048;
 
 const SYSTEM_PROMPT = `You are a DeFi intent parser. Given a user message, determine the action and extract all relevant fields.
 
@@ -116,12 +122,13 @@ console.log("");
 const body = {
   model: MODEL,
   messages: [
-    { role: "system", name: "AI Assistant", content: SYSTEM_PROMPT },
-    { role: "user", name: "User", content: testMessage },
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: testMessage },
   ],
-  temperature: 0.2,
+  stream: false,
+  temperature,
   top_p: 0.95,
-  max_completion_tokens: 512,
+  max_completion_tokens,
 };
 
 try {

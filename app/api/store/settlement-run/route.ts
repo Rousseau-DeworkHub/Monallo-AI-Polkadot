@@ -5,10 +5,16 @@ import {
   getStoreSettlementByUniqueId,
   insertStoreSettlement,
 } from "@/lib/db";
-import { getCreditBalance, settle } from "@/lib/creditLedger";
+import { getCreditBalance, pickStoreLedgerForDailySettle, settle } from "@/lib/creditLedger";
+import {
+  getCreditLedgerAddressForChain,
+  getStaticNetworkForStoreChain,
+  getStoreChainRpc,
+  STORE_INJECTIVE_EVM_CHAIN_ID,
+  STORE_POLKADOT_HUB_CHAIN_ID,
+} from "@/lib/storeChainConfig";
 
 const MON_RAW = 1e6;
-const CHAIN_RPC = process.env.RPC_Polkadot_Hub ?? process.env.POLKADOT_HUB_RPC_URL ?? "https://eth-rpc-testnet.polkadot.io";
 
 /** Yesterday UTC date string YYYY-MM-DD */
 function getSettlementDate(): string {
@@ -32,17 +38,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const contractAddress = process.env.CREDIT_LEDGER_ADDRESS;
     const operatorPk = process.env.STORE_OPERATOR_PRIVATE_KEY;
-    if (!contractAddress || !operatorPk) {
-      return NextResponse.json({ error: "Credit ledger not configured" }, { status: 503 });
+    const hubLedger = getCreditLedgerAddressForChain(STORE_POLKADOT_HUB_CHAIN_ID);
+    const injLedger = getCreditLedgerAddressForChain(STORE_INJECTIVE_EVM_CHAIN_ID);
+    if (!operatorPk || (!hubLedger && !injLedger)) {
+      return NextResponse.json(
+        { error: "Credit ledger (Hub and/or Injective) or operator not configured" },
+        { status: 503 }
+      );
     }
 
     const dateStr = getSettlementDate();
     const { start, end } = dateToRange(dateStr);
     const usersWithUsage = getStoreUsersWithUsageInRange(start, end);
-    const provider = new ethers.JsonRpcProvider(CHAIN_RPC);
-    const signer = new ethers.Wallet(operatorPk, provider);
     const results: { wallet: string; status: string; tx_hash?: string }[] = [];
 
     for (const row of usersWithUsage) {
@@ -53,17 +61,39 @@ export async function POST(request: NextRequest) {
       }
       const usageMon = row.usage_mon / MON_RAW;
       const userAddress = ethers.getAddress(row.wallet_address);
+      const pick = await pickStoreLedgerForDailySettle(row.wallet_address, usageMon);
       let openingRaw: number;
-      try {
-        const balanceMon = await getCreditBalance(provider, contractAddress, row.wallet_address);
-        openingRaw = Math.round(balanceMon * MON_RAW);
-      } catch (e) {
-        results.push({ wallet: row.wallet_address, status: "error", tx_hash: (e as Error).message });
-        continue;
+      let ledgerProvider: ethers.JsonRpcProvider;
+      let ledgerAddress: string;
+      if (pick) {
+        openingRaw = Math.round(pick.openingMon * MON_RAW);
+        ledgerProvider = pick.provider;
+        ledgerAddress = pick.contractAddress;
+      } else {
+        try {
+          const hubRpc = getStoreChainRpc(STORE_POLKADOT_HUB_CHAIN_ID);
+          const hubNet = getStaticNetworkForStoreChain(STORE_POLKADOT_HUB_CHAIN_ID);
+          if (hubRpc && hubLedger && hubNet) {
+            ledgerProvider = new ethers.JsonRpcProvider(hubRpc, hubNet);
+            ledgerAddress = hubLedger;
+          } else {
+            const injRpc = getStoreChainRpc(STORE_INJECTIVE_EVM_CHAIN_ID);
+            const injNet = getStaticNetworkForStoreChain(STORE_INJECTIVE_EVM_CHAIN_ID);
+            if (!injRpc || !injLedger || !injNet) throw new Error("No ledger RPC");
+            ledgerProvider = new ethers.JsonRpcProvider(injRpc, injNet);
+            ledgerAddress = injLedger;
+          }
+          const balanceMon = await getCreditBalance(ledgerProvider, ledgerAddress, row.wallet_address);
+          openingRaw = Math.round(balanceMon * MON_RAW);
+        } catch (e) {
+          results.push({ wallet: row.wallet_address, status: "error", tx_hash: (e as Error).message });
+          continue;
+        }
       }
       const closingRaw = Math.max(0, openingRaw - row.usage_mon);
       try {
-        const { hash } = await settle(signer, contractAddress, userAddress, usageMon, dateStr, uniqueId);
+        const signer = new ethers.Wallet(operatorPk, ledgerProvider);
+        const { hash } = await settle(signer, ledgerAddress, userAddress, usageMon, dateStr, uniqueId);
         insertStoreSettlement({
           user_id: row.user_id,
           wallet_address: row.wallet_address,

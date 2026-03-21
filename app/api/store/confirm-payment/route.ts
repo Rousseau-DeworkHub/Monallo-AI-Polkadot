@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { ethers } from "ethers";
 import { getOrCreateStoreUser, isStoreCreditMinted, insertStoreCreditMint } from "@/lib/db";
 import { mintCredit } from "@/lib/creditLedger";
-
-const POLKADOT_HUB_CHAIN_ID = 420420417;
-const CHAIN_RPC: Record<number, string> = {
-  [POLKADOT_HUB_CHAIN_ID]: process.env.RPC_Polkadot_Hub ?? process.env.POLKADOT_HUB_RPC_URL ?? "https://eth-rpc-testnet.polkadot.io",
-};
+import {
+  getCreditLedgerAddressForChain,
+  getStaticNetworkForStoreChain,
+  getStoreChainRpc,
+  isStorePaymentChainConfigured,
+} from "@/lib/storeChainConfig";
 
 const ERC20_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -34,8 +35,8 @@ export async function POST(request: NextRequest) {
     if (!Number.isFinite(amountMon) || amountMon <= 0) {
       return NextResponse.json({ error: "amount_mon must be a positive number" }, { status: 400 });
     }
-    if (!Number.isInteger(chainId) || !CHAIN_RPC[chainId]) {
-      return NextResponse.json({ error: "Unsupported chain_id" }, { status: 400 });
+    if (!Number.isInteger(chainId) || !isStorePaymentChainConfigured(chainId)) {
+      return NextResponse.json({ error: "Unsupported chain_id or ledger not configured for this chain" }, { status: 400 });
     }
     if (!paymentTo || !ethers.isAddress(paymentTo)) {
       return NextResponse.json({ error: "payment_to (valid address) required" }, { status: 400 });
@@ -53,18 +54,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "payment_decimals invalid" }, { status: 400 });
     }
 
-    const contractAddress = process.env.CREDIT_LEDGER_ADDRESS;
+    const contractAddress = getCreditLedgerAddressForChain(chainId);
     const operatorPk = process.env.STORE_OPERATOR_PRIVATE_KEY;
     if (!contractAddress || !operatorPk) {
-      return NextResponse.json({ error: "Credit ledger not configured" }, { status: 503 });
+      return NextResponse.json({ error: "Credit ledger not configured for this chain" }, { status: 503 });
     }
 
     if (isStoreCreditMinted(txHash, chainId)) {
       return NextResponse.json({ error: "Payment already credited", already_minted: true }, { status: 409 });
     }
 
-    const rpc = CHAIN_RPC[chainId];
-    const provider = new ethers.JsonRpcProvider(rpc);
+    const rpc = getStoreChainRpc(chainId)!;
+    const staticNet = getStaticNetworkForStoreChain(chainId)!;
+    const provider = new ethers.JsonRpcProvider(rpc, staticNet);
     const signer = new ethers.Wallet(operatorPk, provider);
     const userAddress = ethers.getAddress(walletAddress);
 

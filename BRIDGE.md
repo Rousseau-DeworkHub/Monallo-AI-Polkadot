@@ -1,48 +1,108 @@
 # Monallo Bridge 部署与运行
 
-## 部署合约
+## 部署合约（一键三链）
 
-在项目根目录执行（需先在 `.env` 中设置 `DEPLOYER_PRIVATE_KEY`，并在 Sepolia / Polkadot Hub 上领取测试币）：
+脚本 [`scripts/deploy-bridge-standalone.mjs`](scripts/deploy-bridge-standalone.mjs) 会编译并部署：
+
+| 链 | 部署内容 |
+|----|-----------|
+| **Sepolia** | `MonalloBridge` + `maoPAS.PH` + `maoINJ.Injective` |
+| **Polkadot Hub** | `MonalloBridge` + `maoETH.Sepolia` + `maoINJ.Injective` |
+| **Injective EVM (1439)** | `MonalloBridge` + `maoETH.Sepolia` + `maoPAS.PH` |
+
+### 前置条件
+
+1. 项目根目录 `.env` 中设置 **`DEPLOYER_PRIVATE_KEY`**（`0x` 开头），且与 **`RELAYER_PRIVATE_KEY`** 使用**同一账户**（`MaoWrappedToken` 的 `relayer` 即该地址）。
+2. 该地址在三条测试网上均有原生 gas：**Sepolia ETH**、**Hub PAS**、**Injective INJ**。
+3. **RPC**（可选）：`SEPOLIA_RPC_URL`、`POLKADOT_HUB_RPC_URL`；Injective 使用 `RPC_INJECTIVE` 或 `RPC_Injective`，缺省为 `https://k8s.testnet.json-rpc.injective.network/`。
+
+### 一键全量部署（新环境）
 
 ```bash
+cd /path/to/Monallo-AI-Polkadot
 npm run deploy:bridge
 ```
 
-脚本会编译并部署到两条链，输出合约地址及建议的 `.env` 配置。
+终端会打印**完整** `NEXT_PUBLIC_*` / `WRAPPED_*` / `BRIDGE_LOCK_*` 键值，并写入 `bridge-deployed.json`。将打印内容合并进 `.env` 后重启应用与中继。
+
+### 仅补全第三链 + 两条 maoINJ（已有旧版双链部署）
+
+若你曾用旧脚本只部署过 Sepolia/Hub 的 Lock + maoPAS + maoETH，**不要**再跑全量（会生成新 Lock）。改为：
+
+```bash
+npm run deploy:bridge:extend
+```
+
+等价于 `node scripts/deploy-bridge-standalone.mjs --extension-only`。要求 `.env` 里**已有**：
+
+`BRIDGE_LOCK_SEPOLIA`（或 `NEXT_PUBLIC_*`）、`WRAPPED_PAS_SEPOLIA`、`BRIDGE_LOCK_POLKADOT_HUB`、`WRAPPED_ETH_POLKADOT_HUB`。
+
+脚本会**复用**上述地址，仅新部署：Sepolia/Hub 上的 `maoINJ.Injective`，以及 Injective 上的 Lock + 两个 wrapped。
+
+**注意**：`--extension-only` 下新部署的 `maoINJ` 的 relayer 为当前 `DEPLOYER_PRIVATE_KEY` 地址，须与**原有** wrapped 合约的 relayer 一致，否则中继无法为新旧代币统一签名。
 
 ## 合约
 
-- **MonalloBridge.sol**：源链锁定合约，每链部署一份（Sepolia、Polkadot Hub）。用户调用 `lock(recipient, destinationChainId)` 并转入原生代币。
-- **MaoWrappedToken.sol**：目标链上的 wrapped 资产（ERC-20，可铸造）。
-  - Sepolia 上部署 **maoPAS.Polkadot-Hub**（Polkadot Hub 的 PAS 跨到 Sepolia）。
-  - Polkadot Hub 上部署 **maoETH.Sepolia**（Sepolia 的 ETH 跨到 Polkadot Hub）。
-  - 构造函数：`(name, symbol, relayer)`，其中 `relayer` 为中继 EOA，仅其签名可触发 `mint`。
+- **MonalloBridge.sol**：源链锁定合约，**每条支持的 EVM 链一份**。用户调用 `lock(recipient, destinationChainId)` 并转入**该链原生币**（Sepolia ETH、Hub PAS、Injective INJ）。
+- **MaoWrappedToken.sol**：目标链上的 wrapped（ERC-20），由中继按签名 `mint`；用户 `unlock` 时在源链销毁并由中继在目标链 `release` 原生。
 
-部署后写入环境变量（前端用 `NEXT_PUBLIC_*`，中继用无前缀或同名）：
+### Wrapped 矩阵（`目标链Id_源链Id`）
+
+| 环境变量（示例） | 含义 |
+|------------------|------|
+| `WRAPPED_ETH_POLKADOT_HUB` / `NEXT_PUBLIC_*` | Hub 上 maoETH.Sepolia |
+| `WRAPPED_PAS_SEPOLIA` / `NEXT_PUBLIC_*` | Sepolia 上 maoPAS.PH |
+| `WRAPPED_ETH_INJECTIVE` / `NEXT_PUBLIC_*` | Injective 上 maoETH.Sepolia |
+| `WRAPPED_PAS_INJECTIVE` / `NEXT_PUBLIC_*` | Injective 上 maoPAS.PH |
+| `WRAPPED_INJ_SEPOLIA` / `NEXT_PUBLIC_*` | Sepolia 上 maoINJ.Injective |
+| `WRAPPED_INJ_POLKADOT_HUB` / `NEXT_PUBLIC_*` | Hub 上 maoINJ.Injective |
+
+### Lock 地址
 
 - `NEXT_PUBLIC_BRIDGE_LOCK_SEPOLIA` / `BRIDGE_LOCK_SEPOLIA`
 - `NEXT_PUBLIC_BRIDGE_LOCK_POLKADOT_HUB` / `BRIDGE_LOCK_POLKADOT_HUB`
-- `WRAPPED_PAS_SEPOLIA`（Sepolia 上 maoPAS.Polkadot-Hub 地址；API 拉余额用）
-- `NEXT_PUBLIC_WRAPPED_PAS_SEPOLIA`（同上，前端 Your Balance 显示 maoPAS.Polkadot-Hub 用）
-- `WRAPPED_ETH_POLKADOT_HUB`（Polkadot Hub 上 maoETH.Sepolia 地址）
-- `RELAYER_PRIVATE_KEY`（中继钱包私钥，需与 MaoWrappedToken 构造时的 relayer 一致）
+- `NEXT_PUBLIC_BRIDGE_LOCK_INJECTIVE` / `BRIDGE_LOCK_INJECTIVE`（**1439**）
 
-## 中继（必须运行才会在目标链 mint）
+## 中继（必须运行才会在目标链 mint / release）
 
-**锁仓后目标链不会自动到账，必须运行中继才会铸造 maoXXX.SourceChain。**
+**锁仓或 unlock 后对手链不会自动到账，必须运行中继。**
 
 ```bash
-# 在项目根目录（.env 已配置好 BRIDGE_LOCK_*、WRAPPED_*、RELAYER_PRIVATE_KEY）：
-npm run relayer:bridge
+# 在项目根目录（.env：BRIDGE_LOCK_*、WRAPPED_*、RELAYER_PRIVATE_KEY、RPC_*）
+npm run relayer:bridge -- --trigger=all
 ```
 
-中继会轮询两链的 `Locked` 事件（约 15 秒一次），对每条未处理的 lock 在目标链调用对应 wrapped 合约的 `mint(..., signature)`，并写入 `.data/monallo.db` 的 `bridge_transfers` 表。
+单次轮询某一链：
 
-**补发某笔 lock（手动 relay 一次）：**
 ```bash
-node scripts/relayer-bridge.mjs 0x<你的lock交易hash>
+node scripts/relayer-bridge.mjs --trigger=11155111    # Sepolia
+node scripts/relayer-bridge.mjs --trigger=420420417   # Polkadot Hub
+node scripts/relayer-bridge.mjs --trigger=1439         # Injective EVM
+node scripts/relayer-bridge.mjs --trigger=all           # 三链各扫一次
 ```
+
+**补发某笔含 `Locked` 事件的交易：**
+
+```bash
+node scripts/relayer-bridge.mjs 0x<交易 hash>
+```
+
+中继会查询三链（若已配置 Injective RPC 与 Lock）上的 `Locked` / 各 wrapped 上 `UnlockRequested`，写入 `.data/monallo.db`。
+
+建议在三条链上均为 `RELAYER_PRIVATE_KEY` 对应地址准备原生 gas。
+
+### RPC
+
+- `RPC_SEPOLIA`（可选，有默认后备）
+- `RPC_POLKADOT_HUB` / `RPC_Polkadot_Hub` 等（见脚本）
+- `RPC_INJECTIVE` 或 `RPC_Injective`（Injective EVM JSON-RPC）
 
 ## 状态 API
 
-`GET /api/bridge/status?sourceChainId=11155111&sourceTxHash=0x...` 返回 `{ status: "pending" | "relayed", destinationTxHash?: string }`，供前端轮询展示「已跨链」与目标链交易链接。
+`GET /api/bridge/status?sourceChainId=11155111&sourceTxHash=0x...` 返回 `{ status: "pending" | "relayed", destinationTxHash?: string }`，供前端轮询。
+
+`POST /api/bridge/trigger-relay` 会按 `sourceChainId` 触发对应 `--trigger` 或传入 `sourceTxHash` 做单笔 relay。
+
+## 开放边与禁止边（产品规则）
+
+开放：**原生 lock → 目标链 mint wrapped**；反向 **unlock wrapped → 对手链 release 原生**。禁止 **wrapped 与 wrapped 之间的直跨**（具体 6 条见仓库内计划文档）；前端与中继仅对开放边建链。

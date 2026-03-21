@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCreditBalance } from "@/lib/creditLedger";
 import { getOrCreateStoreUser, getStoreAllTokenBalancesByUserId } from "@/lib/db";
+import {
+  getCreditLedgerAddressForChain,
+  getStaticNetworkForStoreChain,
+  getStoreChainRpc,
+  STORE_POLKADOT_HUB_CHAIN_ID,
+} from "@/lib/storeChainConfig";
 import { ethers } from "ethers";
-
-const POLKADOT_HUB_CHAIN_ID = 420420417;
-const CHAIN_RPC: Record<number, string> = {
-  [POLKADOT_HUB_CHAIN_ID]: process.env.RPC_Polkadot_Hub ?? process.env.POLKADOT_HUB_RPC_URL ?? "https://eth-rpc-testnet.polkadot.io",
-};
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,13 +20,14 @@ export async function GET(request: NextRequest) {
     const user = getOrCreateStoreUser(normalized);
     const balanceByModel = getStoreAllTokenBalancesByUserId(user.id);
 
-    const contractAddress = process.env.CREDIT_LEDGER_ADDRESS;
+    const chainId = chainIdParam ? parseInt(chainIdParam, 10) : STORE_POLKADOT_HUB_CHAIN_ID;
+    const rpc = getStoreChainRpc(chainId);
+    const contractAddress = getCreditLedgerAddressForChain(chainId);
     let balanceMon: number | null = null;
-    if (contractAddress) {
+    const staticNet = getStaticNetworkForStoreChain(chainId);
+    if (contractAddress && rpc && staticNet) {
       try {
-        const chainId = chainIdParam ? parseInt(chainIdParam, 10) : POLKADOT_HUB_CHAIN_ID;
-        const rpc = CHAIN_RPC[chainId] ?? CHAIN_RPC[POLKADOT_HUB_CHAIN_ID];
-        const provider = new ethers.JsonRpcProvider(rpc);
+        const provider = new ethers.JsonRpcProvider(rpc, staticNet);
         balanceMon = await getCreditBalance(provider, contractAddress, normalized);
       } catch (_) {
         balanceMon = null;

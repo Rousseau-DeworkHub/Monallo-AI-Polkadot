@@ -10,12 +10,10 @@ import {
   setStoreUsageEventSettledMon,
 } from "@/lib/db";
 import { getCostMonFromUsage, normalizeModelIdForBalance } from "@/lib/monalloProxy";
-import { getCreditBalance, settle } from "@/lib/creditLedger";
+import { getCombinedStoreCreditMon, settleStoreCreditOnBestLedger } from "@/lib/creditLedger";
 
 const HAODE_BASE_URL = process.env.HAODE_BASE_URL ?? "";
 const HAODE_API_KEY = process.env.HAODE_API_KEY ?? "";
-const RPC = process.env.RPC_Polkadot_Hub ?? process.env.POLKADOT_HUB_RPC_URL ?? "https://eth-rpc-testnet.polkadot.io";
-const CREDIT_LEDGER_ADDRESS = process.env.CREDIT_LEDGER_ADDRESS ?? "";
 const LOW_BALANCE_THRESHOLD_MON = 0.1;
 const BALANCE_WARNING = "Insufficient balance. Please recharge soon.";
 const STORE_OPERATOR_PRIVATE_KEY = process.env.STORE_OPERATOR_PRIVATE_KEY ?? "";
@@ -113,10 +111,9 @@ export async function POST(request: NextRequest) {
 
   let availableMonRaw = 0;
   let lowBalanceWarning: string | null = null;
-  if (CREDIT_LEDGER_ADDRESS && user.wallet_address) {
+  if (user.wallet_address) {
     try {
-      const provider = new ethers.JsonRpcProvider(RPC);
-      const balanceMon = await getCreditBalance(provider, CREDIT_LEDGER_ADDRESS, user.wallet_address);
+      const balanceMon = await getCombinedStoreCreditMon(user.wallet_address);
       const now = Math.floor(Date.now() / 1000);
       const d = new Date();
       d.setUTCHours(0, 0, 0, 0);
@@ -130,19 +127,22 @@ export async function POST(request: NextRequest) {
 
   const tryImmediateSettle = async (usageEventId: number, chargedMonRaw: number) => {
     try {
-      if (!CREDIT_LEDGER_ADDRESS || !STORE_OPERATOR_PRIVATE_KEY || !user.wallet_address) return;
+      if (!STORE_OPERATOR_PRIVATE_KEY || !user.wallet_address) return;
       if (chargedMonRaw <= 0) return;
-
-      const provider = new ethers.JsonRpcProvider(RPC);
-      const signer = new ethers.Wallet(STORE_OPERATOR_PRIVATE_KEY, provider);
 
       const dayId = getUtcDateString();
       const settlementId = `${user.wallet_address}_${dayId}_${usageEventId}`;
       const userAddress = ethers.getAddress(user.wallet_address);
       const amountMon = chargedMonRaw / 1e6; // convert raw(1e6) => MON
 
-      const { hash } = await settle(signer, CREDIT_LEDGER_ADDRESS, userAddress, amountMon, dayId, settlementId);
-      setStoreUsageEventSettledMon(usageEventId, chargedMonRaw, hash);
+      const settled = await settleStoreCreditOnBestLedger(
+        STORE_OPERATOR_PRIVATE_KEY,
+        userAddress,
+        amountMon,
+        dayId,
+        settlementId
+      );
+      if (settled) setStoreUsageEventSettledMon(usageEventId, chargedMonRaw, settled.hash);
     } catch (e) {
       // If on-chain settle fails, leave settled_mon=0 so daily settlement-run can retry.
       console.warn("Immediate MON settle failed", e);

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "relayer:bridge": "node scripts/relayer-bridge.mjs",
-    "deploy:bridge": "node scripts/deploy-bridge-standalone.mjs"
+    "deploy:bridge": "node scripts/deploy-bridge-standalone.mjs",
+    "deploy:bridge:extend": "node scripts/deploy-bridge-standalone.mjs --extension-only"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

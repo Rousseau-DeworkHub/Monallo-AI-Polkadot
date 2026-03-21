@@ -6,10 +6,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, Layers, Wallet, Loader2, CheckCircle2, ArrowRight, X, Globe, Copy, ArrowDown, ArrowUpDown } from "lucide-react";
 import { useWallet, formatAddress, SUPPORTED_CHAINS, ChainInfo, WalletType, isMetaMaskAvailable } from "@/hooks/useWallet";
 import { lockViaBridge, unlockViaBridge, getBridgeLockAddress, getWrappedTokenAddressForUnlock } from "@/lib/bridge";
+import {
+  BRIDGE_DIRECTION_CLOSED_MSG,
+  isAllowedBridgeLockMint,
+  isAllowedBridgeUnlock,
+  isForbiddenWrappedWrappedBridge,
+  normalizeWrappedKindFromToken,
+  evmChainIdToBridgeKey,
+} from "@/lib/bridgeRules";
 import { fetchTokenPrices } from "@/lib/balances";
 import { ethers } from "ethers";
 
-const BRIDGE_CHAINS = SUPPORTED_CHAINS.filter((c) => c.id === "sepolia" || c.id === "polkadot-hub-testnet");
+const BRIDGE_CHAINS = SUPPORTED_CHAINS.filter(
+  (c) => c.id === "sepolia" || c.id === "polkadot-hub-testnet" || c.id === "injective-testnet"
+);
 
 interface TokenOption {
   symbol: string;
@@ -26,11 +36,26 @@ const TOKENS_BY_CHAIN: Record<string, TokenOption[]> = {
     ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_SEPOLIA === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_SEPOLIA.trim()
       ? [{ symbol: "maoPAS.PH", name: "maoPAS (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_SEPOLIA.trim(), iconKey: "PAS", isWrapped: true }]
       : []),
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_INJ_SEPOLIA === "string" && process.env.NEXT_PUBLIC_WRAPPED_INJ_SEPOLIA.trim()
+      ? [{ symbol: "maoINJ.Injective", name: "maoINJ (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_INJ_SEPOLIA.trim(), iconKey: "INJ", isWrapped: true }]
+      : []),
   ],
   "polkadot-hub-testnet": [
     { symbol: "PAS", name: "Polkadot Hub PAS", decimals: 18, iconKey: "PAS", isWrapped: false },
     ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB.trim()
       ? [{ symbol: "maoETH.Sepolia", name: "maoETH (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB.trim(), iconKey: "ETH", isWrapped: true }]
+      : []),
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB === "string" && process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB.trim()
+      ? [{ symbol: "maoINJ.Injective", name: "maoINJ (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB.trim(), iconKey: "INJ", isWrapped: true }]
+      : []),
+  ],
+  "injective-testnet": [
+    { symbol: "INJ", name: "Injective INJ", decimals: 18, iconKey: "INJ", isWrapped: false },
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim()
+      ? [{ symbol: "maoETH.Sepolia", name: "maoETH (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim(), iconKey: "ETH", isWrapped: true }]
+      : []),
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim()
+      ? [{ symbol: "maoPAS.PH", name: "maoPAS (Bridge back)", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim(), iconKey: "PAS", isWrapped: true }]
       : []),
   ],
 };
@@ -38,7 +63,17 @@ const TOKENS_BY_CHAIN: Record<string, TokenOption[]> = {
 const TokenLogos: Record<string, string> = {
   ETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png",
   PAS: "https://www.okx.com/cdn/oksupport/asset/currency/icon/dot.png",
+  INJ: "https://www.okx.com/cdn/oksupport/asset/currency/icon/inj20250424102359.png?x-oss-process=image/format,webp/ignore-error,1",
 };
+
+function formatWalletTokenAmount(raw: bigint, decimals: number): string {
+  const s = ethers.formatUnits(raw, decimals);
+  const n = parseFloat(s);
+  if (!Number.isFinite(n)) return s;
+  if (n === 0) return "0";
+  if (n > 0 && n < 0.000001) return "< 0.000001";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
 
 function formatAddressShort(addr: string): string {
   if (!addr || !addr.startsWith("0x") || addr.length < 14) return addr;
@@ -284,6 +319,12 @@ export default function BridgePage() {
   const [txResult, setTxResult] = useState<{ type: "lock" | "unlock"; sourceTxHash: string; explorerUrl?: string; sourceChainId: number; destChainId: number; destExplorer?: string } | null>(null);
   const [destTxHash, setDestTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bridgeAssetBalance, setBridgeAssetBalance] = useState<string | null>(null);
+  const [bridgeAssetBalanceLoading, setBridgeAssetBalanceLoading] = useState(false);
+  const [bridgeAssetBalanceTick, setBridgeAssetBalanceTick] = useState(0);
+  const bridgeAssetBalanceFetchId = useRef(0);
+
+  const walletAddr = ((evmAddress || address) ?? "").trim() || null;
 
   const sourceChain = BRIDGE_CHAINS.find((c) => c.id === sourceChainId) ?? BRIDGE_CHAINS[0];
   const targetChain = BRIDGE_CHAINS.find((c) => c.id === targetChainId) ?? BRIDGE_CHAINS[1];
@@ -292,7 +333,8 @@ export default function BridgePage() {
 
   useEffect(() => {
     if (sourceChainId === targetChainId) {
-      setTargetChainId(sourceChainId === "sepolia" ? "polkadot-hub-testnet" : "sepolia");
+      const alt = BRIDGE_CHAINS.find((c) => c.id !== sourceChainId);
+      if (alt) setTargetChainId(alt.id);
     }
   }, [sourceChainId, targetChainId]);
 
@@ -303,6 +345,60 @@ export default function BridgePage() {
       setSelectedToken(null);
     }
   }, [sourceChainId, sourceTokens]);
+
+  /** On-chain balance for selected asset on the source chain (native or wrapped). */
+  useEffect(() => {
+    const id = ++bridgeAssetBalanceFetchId.current;
+    if (!isConnected || !walletAddr || !selectedToken || typeof window === "undefined" || !window.ethereum) {
+      setBridgeAssetBalance(null);
+      setBridgeAssetBalanceLoading(false);
+      return;
+    }
+    if (!chain || chain.chainId !== sourceChain.chainId) {
+      setBridgeAssetBalance(null);
+      setBridgeAssetBalanceLoading(false);
+      return;
+    }
+    setBridgeAssetBalanceLoading(true);
+    setBridgeAssetBalance(null);
+    (async () => {
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
+        const network = await provider.getNetwork();
+        if (id !== bridgeAssetBalanceFetchId.current) return;
+        if (network.chainId !== BigInt(sourceChain.chainId)) {
+          setBridgeAssetBalance(null);
+          return;
+        }
+        let raw: bigint;
+        if (selectedToken.contract) {
+          const c = new ethers.Contract(
+            selectedToken.contract,
+            ["function balanceOf(address) view returns (uint256)"],
+            provider
+          );
+          raw = await c.balanceOf(walletAddr);
+        } else {
+          raw = await provider.getBalance(walletAddr);
+        }
+        if (id !== bridgeAssetBalanceFetchId.current) return;
+        setBridgeAssetBalance(formatWalletTokenAmount(raw, selectedToken.decimals));
+      } catch {
+        if (id === bridgeAssetBalanceFetchId.current) setBridgeAssetBalance(null);
+      } finally {
+        if (id === bridgeAssetBalanceFetchId.current) setBridgeAssetBalanceLoading(false);
+      }
+    })();
+  }, [
+    isConnected,
+    walletAddr,
+    chain?.chainId,
+    sourceChain.chainId,
+    selectedToken?.symbol,
+    selectedToken?.contract,
+    selectedToken?.decimals,
+    bridgeAssetBalanceTick,
+  ]);
 
   // Close Connect Wallet modal when connection succeeds
   useEffect(() => {
@@ -340,6 +436,39 @@ export default function BridgePage() {
       return;
     }
 
+    const srcKey = evmChainIdToBridgeKey(sourceChain.chainId);
+    const tgtKey = evmChainIdToBridgeKey(targetChain.chainId);
+    if (!srcKey || !tgtKey) {
+      setError("Unsupported chain pair.");
+      return;
+    }
+    const tokRaw = selectedToken.symbol.trim();
+    const tokUpper = tokRaw.toUpperCase();
+    if (!isUnlock) {
+      if (normalizeWrappedKindFromToken(tokRaw)) {
+        setError("For lock, use native assets on the source chain (ETH / PAS / INJ), not wrapped tokens.");
+        return;
+      }
+      if (!isAllowedBridgeLockMint(srcKey, tgtKey, tokUpper)) {
+        setError(BRIDGE_DIRECTION_CLOSED_MSG);
+        return;
+      }
+    } else {
+      if (isForbiddenWrappedWrappedBridge(srcKey, tgtKey, tokRaw) || !isAllowedBridgeUnlock(srcKey, tgtKey, tokRaw)) {
+        setError(BRIDGE_DIRECTION_CLOSED_MSG);
+        return;
+      }
+    }
+
+    if (chain?.chainId !== sourceChain.chainId) {
+      try {
+        await switchChain(sourceChain.chainId);
+      } catch {
+        setError("Please switch wallet to the source network.");
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
       if (isUnlock) {
@@ -366,6 +495,7 @@ export default function BridgePage() {
         });
         pollDestinationTx(hash, sourceChain.chainId, targetChain.explorer ?? "");
         saveBridgeTx("Bridge", hash, sourceChain.explorer ? `${sourceChain.explorer}/tx/${hash}` : undefined, amt, selectedToken.symbol, receiver, sourceChain.name, targetChain.name);
+        setBridgeAssetBalanceTick((t) => t + 1);
       } else {
         const lockAddress = getBridgeLockAddress(sourceChain.chainId);
         if (!lockAddress) {
@@ -389,10 +519,12 @@ export default function BridgePage() {
           destExplorer: targetChain.explorer,
         });
         pollDestinationTx(hash, sourceChain.chainId, targetChain.explorer ?? "");
-        const prices = await fetchTokenPrices([selectedToken.symbol === "ETH" ? "ETH" : "DOT"]);
-        const priceUsd = selectedToken.symbol === "ETH" ? prices.ETH ?? 0 : prices.DOT ?? 0;
+        const priceSym = selectedToken.symbol === "ETH" ? "ETH" : selectedToken.symbol === "INJ" ? "INJ" : "DOT";
+        const prices = await fetchTokenPrices([priceSym]);
+        const priceUsd = prices[priceSym] ?? 0;
         const amountUsd = parseFloat(amt) * priceUsd;
         saveBridgeTx("Bridge", hash, sourceChain.explorer ? `${sourceChain.explorer}/tx/${hash}` : undefined, amt, selectedToken.symbol, receiver, sourceChain.name, targetChain.name, amountUsd);
+        setBridgeAssetBalanceTick((t) => t + 1);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -536,7 +668,7 @@ export default function BridgePage() {
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">
             Monallo <span className="bg-gradient-to-r from-[#14F195] to-[#00D9FF] bg-clip-text text-transparent">Bridge</span>
           </h1>
-          <p className="text-gray-400">Lock or unlock assets between Sepolia and Polkadot Hub. Choose direction and asset below.</p>
+          <p className="text-gray-400">Professional cross-chain service.</p>
         </motion.div>
 
         <motion.div
@@ -606,6 +738,31 @@ export default function BridgePage() {
                   </button>
                 ))}
               </div>
+              {isConnected && walletAddr && selectedToken && (
+                <div className="mt-3 text-xs text-gray-400 min-h-[1.25rem]">
+                  {chain?.chainId !== sourceChain.chainId ? (
+                    <span className="text-amber-400/80">
+                      Switch wallet to {sourceChain.name} to see balance for {selectedToken.symbol}.
+                    </span>
+                  ) : bridgeAssetBalanceLoading ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      Loading wallet balance…
+                    </span>
+                  ) : bridgeAssetBalance != null ? (
+                    <>
+                      <span className="text-gray-500">Wallet balance</span>{" "}
+                      <span className="font-mono text-white tabular-nums">{bridgeAssetBalance}</span>
+                      <span className="text-gray-400"> {selectedToken.symbol}</span>
+                    </>
+                  ) : (
+                    <span className="text-amber-400/80">Could not load wallet balance</span>
+                  )}
+                </div>
+              )}
+              {!isConnected && sourceTokens.length > 0 && (
+                <p className="mt-3 text-xs text-gray-500">Connect wallet to see balance for the selected asset.</p>
+              )}
             </div>
 
             {/* Amount */}

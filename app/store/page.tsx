@@ -11,9 +11,7 @@ import { ethers } from "ethers";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-const CREDIT_LEDGER_ADDRESS = typeof process.env.NEXT_PUBLIC_CREDIT_LEDGER_ADDRESS === "string" ? process.env.NEXT_PUBLIC_CREDIT_LEDGER_ADDRESS.trim() : "";
-
-const STORE_CHAINS = SUPPORTED_CHAINS.filter((c) => c.id === "polkadot-hub-testnet");
+const STORE_CHAINS = SUPPORTED_CHAINS.filter((c) => c.id === "polkadot-hub-testnet" || c.id === "injective-testnet");
 
 /** Pack discount by index: 1M=95%, 5M=92%, 10M=90%, 20M=85%, 50M=80%, 100M=70% */
 const PACK_DISCOUNTS = [0.95, 0.92, 0.9, 0.85, 0.8, 0.7] as const;
@@ -57,21 +55,35 @@ interface PaymentToken {
 }
 
 const PAYMENT_TOKENS: PaymentToken[] = [
-  { symbol: "PAS", name: "Polkadot Hub PAS", chainId: "polkadot-hub-testnet", iconKey: "PAS", decimals: 18 },
+  { symbol: "PAS", name: "PAS", chainId: "polkadot-hub-testnet", iconKey: "PAS", decimals: 18 },
   ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB.trim()
-    ? [{ symbol: "maoETH.Sepolia", name: "maoETH (Polkadot Hub)", chainId: "polkadot-hub-testnet", iconKey: "ETH", contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB.trim(), decimals: 18 }]
+    ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", chainId: "polkadot-hub-testnet", iconKey: "ETH", contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB.trim(), decimals: 18 }]
+    : []),
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB === "string" && process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB.trim()
+    ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", chainId: "polkadot-hub-testnet", iconKey: "INJ", contract: process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB.trim(), decimals: 18 }]
+    : []),
+  { symbol: "INJ", name: "INJ", chainId: "injective-testnet", iconKey: "INJ", decimals: 18 },
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim()
+    ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", chainId: "injective-testnet", iconKey: "ETH", contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim(), decimals: 18 }]
+    : []),
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim()
+    ? [{ symbol: "maoPAS.PH", name: "maoPAS.PH", chainId: "injective-testnet", iconKey: "PAS", contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim(), decimals: 18 }]
     : []),
 ];
 
 const SEPOLIA_CHAIN_ID = 11155111;
 const POLKADOT_HUB_CHAIN_ID = 420420417;
+const INJECTIVE_EVM_CHAIN_ID = 1439;
 function getChainIdForPayment(chainIdKey: string): number {
-  return chainIdKey === "sepolia" ? SEPOLIA_CHAIN_ID : POLKADOT_HUB_CHAIN_ID;
+  if (chainIdKey === "sepolia") return SEPOLIA_CHAIN_ID;
+  if (chainIdKey === "injective-testnet") return INJECTIVE_EVM_CHAIN_ID;
+  return POLKADOT_HUB_CHAIN_ID;
 }
 
 const TokenLogos: Record<string, string> = {
   ETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png",
   PAS: "https://www.okx.com/cdn/oksupport/asset/currency/icon/dot.png",
+  INJ: "https://www.okx.com/cdn/oksupport/asset/currency/icon/inj20250424102359.png?x-oss-process=image/format,webp/ignore-error,1",
 };
 
 /** Recharge MON presets (1 USD = 1 MON) */
@@ -97,7 +109,17 @@ export interface PurchaseRecord {
 const EXPLORER_BY_CHAIN_ID: Record<number, string> = {
   [11155111]: "https://sepolia.etherscan.io",
   [420420417]: "https://blockscout-testnet.polkadot.io",
+  [1439]: "https://testnet.blockscout.injective.network",
 };
+
+function formatWalletTokenAmount(raw: bigint, decimals: number): string {
+  const s = ethers.formatUnits(raw, decimals);
+  const n = parseFloat(s);
+  if (!Number.isFinite(n)) return s;
+  if (n === 0) return "0";
+  if (n > 0 && n < 0.000001) return "< 0.000001";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
 
 /** Map raw payment/transaction errors to user-friendly modal message */
 function getPaymentErrorMessage(e: unknown): string {
@@ -1133,6 +1155,10 @@ export default function StorePage() {
   const [chainBalanceMon, setChainBalanceMon] = useState<number | null>(null);
   const [optimisticMonSpent, setOptimisticMonSpent] = useState<number>(0);
   const purchaseHistoryRef = useRef<HTMLDivElement>(null);
+  const [payTokenWalletBalance, setPayTokenWalletBalance] = useState<string | null>(null);
+  const [payTokenWalletBalanceLoading, setPayTokenWalletBalanceLoading] = useState(false);
+  const [payBalanceTick, setPayBalanceTick] = useState(0);
+  const payBalanceFetchId = useRef(0);
 
   const fetchChainBalance = useCallback(() => {
     if (!address || !chain?.id) return;
@@ -1156,6 +1182,61 @@ export default function StorePage() {
   useEffect(() => {
     if (address && chain?.id) fetchChainBalance();
   }, [address, chain?.id, fetchChainBalance]);
+
+  /** On-chain wallet balance for the Pay with token (native or ERC-20). */
+  useEffect(() => {
+    const id = ++payBalanceFetchId.current;
+    if (!isConnected || !address || !currentPaymentToken || typeof window === "undefined" || !window.ethereum) {
+      setPayTokenWalletBalance(null);
+      setPayTokenWalletBalanceLoading(false);
+      return;
+    }
+    if (!chain?.id || chain.id !== currentPaymentToken.chainId) {
+      setPayTokenWalletBalance(null);
+      setPayTokenWalletBalanceLoading(false);
+      return;
+    }
+    setPayTokenWalletBalanceLoading(true);
+    setPayTokenWalletBalance(null);
+    (async () => {
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
+        const expectedChainId = BigInt(getChainIdForPayment(currentPaymentToken.chainId));
+        const network = await provider.getNetwork();
+        if (id !== payBalanceFetchId.current) return;
+        if (network.chainId !== expectedChainId) {
+          setPayTokenWalletBalance(null);
+          return;
+        }
+        let raw: bigint;
+        if (currentPaymentToken.contract) {
+          const c = new ethers.Contract(
+            currentPaymentToken.contract,
+            ["function balanceOf(address) view returns (uint256)"],
+            provider
+          );
+          raw = await c.balanceOf(address);
+        } else {
+          raw = await provider.getBalance(address);
+        }
+        if (id !== payBalanceFetchId.current) return;
+        setPayTokenWalletBalance(formatWalletTokenAmount(raw, currentPaymentToken.decimals));
+      } catch {
+        if (id === payBalanceFetchId.current) setPayTokenWalletBalance(null);
+      } finally {
+        if (id === payBalanceFetchId.current) setPayTokenWalletBalanceLoading(false);
+      }
+    })();
+  }, [
+    isConnected,
+    address,
+    chain?.id,
+    currentPaymentToken.symbol,
+    currentPaymentToken.chainId,
+    currentPaymentToken.contract,
+    currentPaymentToken.decimals,
+    payBalanceTick,
+  ]);
 
   // Refetch balance when opening My Balance modal so token counts stay in sync after API usage from outside.
   useEffect(() => {
@@ -1370,7 +1451,13 @@ export default function StorePage() {
         : quantityMode !== "recharge" && tokenCount <= 0
           ? "Select a package"
           : !canPay && chain
-            ? `Switch network to ${currentPaymentToken?.chainId === "sepolia" ? "Sepolia" : "Polkadot Hub"} to pay with ${currentPaymentToken?.symbol ?? "crypto"}`
+            ? `Switch network to ${
+                currentPaymentToken?.chainId === "sepolia"
+                  ? "Sepolia"
+                  : currentPaymentToken?.chainId === "injective-testnet"
+                    ? "Injective"
+                    : "Polkadot Hub"
+              } to pay with ${currentPaymentToken?.symbol ?? "crypto"}`
             : !canPay
               ? "Select network"
               : null;
@@ -1569,7 +1656,7 @@ export default function StorePage() {
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">
             Monallo <span className="bg-gradient-to-r from-[#F68521] to-[#FFB347] bg-clip-text text-transparent">Store</span>
           </h1>
-          <p className="text-gray-400 mb-6">Purchase compute tokens for GPT-5.2, MiniMax M2.5, Gemini 3.1, Qwen 3.5, Seed 1.8 and more. Pay with ETH, PAS, or wrapped assets.</p>
+          <p className="text-gray-400 mb-6">Purchase compute tokens for GPT-5.2, MiniMax M2.5, Gemini 3.1, Qwen 3.5, Seed 1.8 and more. Pay with ETH, PAS, INJ or wrapped assets.</p>
           <div className="flex flex-wrap gap-3">
             <button
               type="button"
@@ -1768,10 +1855,33 @@ export default function StorePage() {
                     >
                       <img src={TokenLogos[t.iconKey]} alt="" className="w-7 h-7 rounded-full object-contain ring-1 ring-white/10" />
                       <span className="font-semibold">{t.symbol}</span>
-                      <span className="text-[10px] text-gray-500">{t.chainId === "sepolia" ? "Sepolia" : "Polkadot Hub"}</span>
+                      {t.chainId === "sepolia" && (
+                        <span className="text-[10px] text-gray-500">Sepolia</span>
+                      )}
                     </button>
                   ))}
                 </div>
+                {isConnected && chain?.id && currentPaymentToken?.chainId === chain.id && (
+                  <p className="mt-3 text-xs text-gray-400 min-h-[1.25rem]">
+                    {payTokenWalletBalanceLoading ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                        Loading wallet balance…
+                      </span>
+                    ) : payTokenWalletBalance != null ? (
+                      <>
+                        <span className="text-gray-500">Wallet balance</span>{" "}
+                        <span className="font-mono text-white tabular-nums">{payTokenWalletBalance}</span>
+                        <span className="text-gray-400"> {currentPaymentToken.symbol}</span>
+                      </>
+                    ) : (
+                      <span className="text-amber-400/80">Could not load wallet balance</span>
+                    )}
+                  </p>
+                )}
+                {!isConnected && (
+                  <p className="mt-3 text-xs text-gray-500">Connect wallet to see balance for the selected token.</p>
+                )}
                 {isConnected && !chain && (
                   <p className="mt-2 text-xs text-amber-400/90">Select a network to see payment options.</p>
                 )}
@@ -1901,6 +2011,7 @@ export default function StorePage() {
                             }),
                           });
                           fetchChainBalance();
+                          setPayBalanceTick((t) => t + 1);
                           fetchPurchaseHistory();
                         } catch (_) {}
                         saveRechargeMon(rechargeBalanceMon + rechargeUsd);
@@ -1965,6 +2076,7 @@ export default function StorePage() {
                         });
                       } catch (_) {}
                       fetchPurchaseHistory();
+                      setPayBalanceTick((t) => t + 1);
                       setShowPurchaseSuccessModal(true);
                     } catch (e) {
                       setPaymentError(null);

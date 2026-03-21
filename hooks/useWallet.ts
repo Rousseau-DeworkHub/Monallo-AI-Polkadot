@@ -34,6 +34,30 @@ declare global {
 
 const SUBWALLET_JS = "subwallet-js";
 
+/** 上次成功连接的钱包类型，用于刷新后静默恢复（不存私钥） */
+const WALLET_TYPE_STORAGE_KEY = "monallo_wallet_type";
+
+function readPersistedWalletType(): WalletType | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = localStorage.getItem(WALLET_TYPE_STORAGE_KEY);
+    if (v === "metamask" || v === "subwallet-evm" || v === "subwallet-pvm") return v;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function writePersistedWalletType(wallet: WalletType | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (wallet == null) localStorage.removeItem(WALLET_TYPE_STORAGE_KEY);
+    else localStorage.setItem(WALLET_TYPE_STORAGE_KEY, wallet);
+  } catch {
+    /* ignore */
+  }
+}
+
 export interface ChainInfo {
   id: string;
   name: string;
@@ -96,6 +120,22 @@ export const SUPPORTED_CHAINS: ChainInfo[] = [
     chainId: 420420417,
     symbol: "PAS",
     explorer: "https://blockscout-testnet.polkadot.io",
+  },
+  // Injective EVM Testnet — https://testnet.blockscout.injective.network/
+  {
+    id: "injective-testnet",
+    name: "Injective",
+    icon: "⚡",
+    logo: "https://www.okx.com/cdn/oksupport/asset/currency/icon/inj20250424102359.png?x-oss-process=image/format,webp/ignore-error,1",
+    color: "#00F2FE",
+    type: "EVM",
+    rpcUrl:
+      typeof process !== "undefined" && process.env?.RPC_Injective?.trim()
+        ? process.env.RPC_Injective.trim()
+        : "https://k8s.testnet.json-rpc.injective.network/",
+    chainId: 1439,
+    symbol: "INJ",
+    explorer: "https://testnet.blockscout.injective.network",
   },
 ];
 
@@ -179,7 +219,7 @@ export function useWallet() {
 
   const connectMetaMask = useCallback(async (targetChainId?: number) => {
     if (!window.ethereum) {
-      setState((prev) => ({ ...prev, error: "请安装 MetaMask 扩展", isConnecting: false }));
+      setState((prev) => ({ ...prev, error: "Please install the MetaMask extension", isConnecting: false }));
       return;
     }
     evmProviderRef.current = window.ethereum as EvmProvider;
@@ -205,17 +245,18 @@ export function useWallet() {
         evmAddress: accounts[0],
         substrateAddress: null,
       });
+      writePersistedWalletType("metamask");
       if (targetChainId != null && targetChainId !== effectiveChainId) await switchChain(targetChainId);
     } catch (error: unknown) {
       const err = error as { code?: number; message?: string };
       const message =
         err?.code === 4001
-          ? "已取消连接"
+          ? "Connection cancelled"
           : err?.message && typeof err.message === "string"
             ? err.message
             : error instanceof Error
               ? error.message
-              : "连接失败，请解锁 MetaMask 后重试";
+              : "Connection failed; unlock MetaMask and try again";
       setState((prev) => ({ ...prev, isConnecting: false, error: message }));
     }
   }, [getChainInfo]);
@@ -226,7 +267,7 @@ export function useWallet() {
       const provider = await getEIP6963Provider("SubWallet");
       const evmProvider = (provider || window.ethereum) as EvmProvider | undefined;
       if (!evmProvider?.request) {
-        setState((prev) => ({ ...prev, isConnecting: false, error: "未检测到 SubWallet 或请安装 SubWallet 扩展" }));
+        setState((prev) => ({ ...prev, isConnecting: false, error: "SubWallet not detected; install the SubWallet extension" }));
         return;
       }
       evmProviderRef.current = evmProvider;
@@ -250,16 +291,17 @@ export function useWallet() {
         evmAddress: accounts[0],
         substrateAddress: null,
       });
+      writePersistedWalletType("subwallet-evm");
       if (targetChainId != null && targetChainId !== effectiveChainId) await switchChain(targetChainId);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "SubWallet (EVM) 连接失败";
+      const message = error instanceof Error ? error.message : "SubWallet (EVM) connection failed";
       setState((prev) => ({ ...prev, isConnecting: false, error: message }));
     }
   }, [getChainInfo]);
 
   const connectSubWalletPVM = useCallback(async () => {
     if (!window.injectedWeb3?.[SUBWALLET_JS]) {
-      setState((prev) => ({ ...prev, isConnecting: false, error: "请安装 SubWallet 扩展" }));
+      setState((prev) => ({ ...prev, isConnecting: false, error: "Please install the SubWallet extension" }));
       return;
     }
     setState((prev) => ({ ...prev, isConnecting: true, error: null }));
@@ -268,7 +310,7 @@ export function useWallet() {
       const extension = await SubWalletExtension.enable(window.location.origin);
       const accounts = await extension.accounts.get();
       if (!accounts.length) {
-        setState((prev) => ({ ...prev, isConnecting: false, error: "SubWallet 中暂无账户" }));
+        setState((prev) => ({ ...prev, isConnecting: false, error: "No account in SubWallet" }));
         return;
       }
       const polkadotChain = SUPPORTED_CHAINS.find((c) => c.id === "polkadot")!;
@@ -283,8 +325,9 @@ export function useWallet() {
         evmAddress: null,
         substrateAddress: accounts[0].address,
       });
+      writePersistedWalletType("subwallet-pvm");
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "SubWallet (Polkadot) 连接失败";
+      const message = error instanceof Error ? error.message : "SubWallet (Polkadot) connection failed";
       setState((prev) => ({ ...prev, isConnecting: false, error: message }));
     }
   }, []);
@@ -296,7 +339,7 @@ export function useWallet() {
         if (wallet === "subwallet-evm") return await connectSubWalletEVM(targetChainId);
         if (wallet === "subwallet-pvm") return await connectSubWalletPVM();
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "连接失败";
+        const msg = e instanceof Error ? e.message : "Connection failed";
         setState((prev) => ({ ...prev, isConnecting: false, error: msg }));
       }
     },
@@ -354,6 +397,7 @@ export function useWallet() {
   }, [state.walletType]);
 
   const disconnect = useCallback(() => {
+    writePersistedWalletType(null);
     evmProviderRef.current = null;
     setState({
       address: null,
@@ -368,13 +412,123 @@ export function useWallet() {
     });
   }, []);
 
+  /** 刷新后静默恢复：EVM 用 eth_accounts（不弹窗），PVM 用已授权站点再次 enable */
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = readPersistedWalletType();
+    if (!saved) return;
+    let cancelled = false;
+    (async () => {
+      setState((prev) => ({ ...prev, isConnecting: true, error: null }));
+      try {
+        if (saved === "metamask") {
+          if (!window.ethereum) {
+            writePersistedWalletType(null);
+            return;
+          }
+          const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+          if (cancelled) return;
+          if (!accounts.length) {
+            writePersistedWalletType(null);
+            return;
+          }
+          evmProviderRef.current = window.ethereum as EvmProvider;
+          const chainIdRaw = (await window.ethereum.request({ method: "eth_chainId" })) as string;
+          const chainIdNum =
+            typeof chainIdRaw === "string" && /^0x/.test(chainIdRaw) ? parseInt(chainIdRaw, 16) : Number(chainIdRaw);
+          const chain = getChainInfo(Number.isNaN(chainIdNum) ? chainIdRaw : chainIdNum);
+          const effectiveChainId = Number.isNaN(chainIdNum) ? (chain?.chainId ?? 0) : chainIdNum;
+          setState({
+            address: accounts[0],
+            chainId: effectiveChainId,
+            chain: chain || null,
+            isConnected: true,
+            isConnecting: false,
+            error: null,
+            walletType: "metamask",
+            evmAddress: accounts[0],
+            substrateAddress: null,
+          });
+        } else if (saved === "subwallet-evm") {
+          const provider = await getEIP6963Provider("SubWallet");
+          const evmProvider = (provider || window.ethereum) as EvmProvider | undefined;
+          if (!evmProvider?.request) {
+            writePersistedWalletType(null);
+            return;
+          }
+          const accounts = (await evmProvider.request({ method: "eth_accounts" })) as string[];
+          if (cancelled) return;
+          if (!accounts.length) {
+            writePersistedWalletType(null);
+            return;
+          }
+          evmProviderRef.current = evmProvider;
+          const chainIdRaw = (await evmProvider.request({ method: "eth_chainId" })) as string;
+          const chainIdNum =
+            typeof chainIdRaw === "string" && /^0x/.test(chainIdRaw) ? parseInt(chainIdRaw, 16) : Number(chainIdRaw);
+          const chain = getChainInfo(Number.isNaN(chainIdNum) ? chainIdRaw : chainIdNum);
+          const effectiveChainId = Number.isNaN(chainIdNum) ? (chain?.chainId ?? 0) : chainIdNum;
+          setState({
+            address: accounts[0],
+            chainId: effectiveChainId,
+            chain: chain || null,
+            isConnected: true,
+            isConnecting: false,
+            error: null,
+            walletType: "subwallet-evm",
+            evmAddress: accounts[0],
+            substrateAddress: null,
+          });
+        } else if (saved === "subwallet-pvm") {
+          if (!window.injectedWeb3?.[SUBWALLET_JS]) {
+            writePersistedWalletType(null);
+            return;
+          }
+          const SubWalletExtension = window.injectedWeb3[SUBWALLET_JS];
+          const extension = await SubWalletExtension.enable(window.location.origin);
+          if (cancelled) return;
+          const accounts = await extension.accounts.get();
+          if (!accounts.length) {
+            writePersistedWalletType(null);
+            return;
+          }
+          const polkadotChain = SUPPORTED_CHAINS.find((c) => c.id === "polkadot")!;
+          setState({
+            address: accounts[0].address,
+            chainId: polkadotChain.chainId,
+            chain: polkadotChain,
+            isConnected: true,
+            isConnecting: false,
+            error: null,
+            walletType: "subwallet-pvm",
+            evmAddress: null,
+            substrateAddress: accounts[0].address,
+          });
+        }
+      } catch {
+        writePersistedWalletType(null);
+      } finally {
+        setState((prev) => ({ ...prev, isConnecting: false }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getChainInfo]);
+
+  useEffect(() => {
+    if (!state.isConnected || state.walletType === "subwallet-pvm") return;
     const provider = evmProviderRef.current || window.ethereum;
     if (!provider || !("on" in provider)) return;
     const handleAccountsChanged = (accounts: unknown) => {
       const accs = accounts as string[];
       if (accs.length === 0) disconnect();
-      else setState((prev) => ({ ...prev, address: accs[0], evmAddress: prev.walletType === "subwallet-evm" ? accs[0] : prev.evmAddress }));
+      else
+        setState((prev) => ({
+          ...prev,
+          address: accs[0],
+          evmAddress: prev.walletType === "metamask" || prev.walletType === "subwallet-evm" ? accs[0] : prev.evmAddress,
+        }));
     };
     const handleChainChanged = (chainId: unknown) => {
       const chainIdNum = typeof chainId === "string"
@@ -394,7 +548,13 @@ export function useWallet() {
       (provider as { removeListener?: (e: string, h: (...args: unknown[]) => void) => void })?.removeListener?.("accountsChanged", handleAccountsChanged);
       (provider as { removeListener?: (e: string, h: (...args: unknown[]) => void) => void })?.removeListener?.("chainChanged", handleChainChanged);
     };
-  }, [disconnect, getChainInfo]);
+  }, [disconnect, getChainInfo, state.isConnected, state.walletType]);
+
+  /** Send / Bridge 等交易：优先使用已绑定的 EVM provider（SubWallet EVM 非 window.ethereum 时必需） */
+  const getEvmInjectedProvider = useCallback((): EvmProvider | null => {
+    if (typeof window === "undefined") return null;
+    return (evmProviderRef.current ?? window.ethereum) as EvmProvider | null;
+  }, []);
 
   return {
     ...state,
@@ -407,6 +567,7 @@ export function useWallet() {
     connectSubWalletPVM,
     switchChain,
     disconnect,
+    getEvmInjectedProvider,
     chains: SUPPORTED_CHAINS,
   };
 }

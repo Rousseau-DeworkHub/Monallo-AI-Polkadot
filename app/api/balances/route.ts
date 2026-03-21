@@ -7,6 +7,9 @@ const SEPOLIA_TOKENS: TokenSpec[] = [
   ...(process.env.WRAPPED_PAS_SEPOLIA?.trim()
     ? [{ symbol: "maoPAS.PH", name: "maoPAS.Polkadot-Hub", decimals: 18, contract: process.env.WRAPPED_PAS_SEPOLIA!.trim(), icon: "PAS" } as TokenSpec]
     : []),
+  ...(process.env.WRAPPED_INJ_SEPOLIA?.trim()
+    ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", decimals: 18, contract: process.env.WRAPPED_INJ_SEPOLIA!.trim(), icon: "INJ" } as TokenSpec]
+    : []),
 ];
 
 const SEPOLIA_RPC_URLS =
@@ -18,6 +21,11 @@ const POLKADOT_HUB_RPC_URLS =
   process.env.RPC_Polkadot_Hub?.trim()
     ? [process.env.RPC_Polkadot_Hub.trim()]
     : ["https://eth-rpc-testnet.polkadot.io", "https://services.polkadothub-rpc.com/testnet"];
+
+const INJECTIVE_TESTNET_RPC_URLS = [
+  process.env.RPC_Injective?.trim(),
+  "https://k8s.testnet.json-rpc.injective.network/",
+].filter((u): u is string => Boolean(u));
 
 const EVM_CHAINS: Record<
   number,
@@ -33,6 +41,21 @@ const EVM_CHAINS: Record<
       { symbol: "PAS", name: "Polkadot Hub", decimals: 18, icon: "PAS" },
       ...(process.env.WRAPPED_ETH_POLKADOT_HUB?.trim()
         ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", decimals: 18, contract: process.env.WRAPPED_ETH_POLKADOT_HUB!.trim(), icon: "SEPOLIA_ETH" } as TokenSpec]
+        : []),
+      ...(process.env.WRAPPED_INJ_POLKADOT_HUB?.trim()
+        ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", decimals: 18, contract: process.env.WRAPPED_INJ_POLKADOT_HUB!.trim(), icon: "INJ" } as TokenSpec]
+        : []),
+    ],
+  },
+  1439: {
+    rpcUrls: INJECTIVE_TESTNET_RPC_URLS.length > 0 ? Array.from(new Set(INJECTIVE_TESTNET_RPC_URLS)) : ["https://k8s.testnet.json-rpc.injective.network/"],
+    tokens: [
+      { symbol: "INJ", name: "Injective", decimals: 18, icon: "INJ" },
+      ...(process.env.WRAPPED_PAS_INJECTIVE?.trim()
+        ? [{ symbol: "maoPAS.PH", name: "maoPAS.Polkadot-Hub", decimals: 18, contract: process.env.WRAPPED_PAS_INJECTIVE!.trim(), icon: "PAS" } as TokenSpec]
+        : []),
+      ...(process.env.WRAPPED_ETH_INJECTIVE?.trim()
+        ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", decimals: 18, contract: process.env.WRAPPED_ETH_INJECTIVE!.trim(), icon: "SEPOLIA_ETH" } as TokenSpec]
         : []),
     ],
   },

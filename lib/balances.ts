@@ -37,10 +37,13 @@ const COINGECKO_IDS: Record<string, string> = {
   PAS: "polkadot", // Polkadot Hub 代币，用 DOT 价格近似
   "maoPAS.PH": "polkadot", // maoPAS.Polkadot-Hub 用 DOT 价格近似
   "maoETH.Sepolia": "ethereum", // Polkadot Hub 上的 maoETH.Sepolia 用 ETH 价格
+  INJ: "injective-protocol",
+  "maoINJ.Injective": "injective-protocol",
 };
 
 const OKX_ETH_SYMBOLS = ["ETH", "SEPOLIA_ETH", "maoETH.Sepolia"];
 const OKX_DOT_SYMBOLS = ["DOT", "PAS", "maoPAS.PH"];
+const OKX_INJ_SYMBOLS = ["INJ", "maoINJ.Injective"];
 
 /** 从 OKX 获取永续合约最新价（last） */
 async function fetchOkxTicker(instId: string): Promise<number> {
@@ -55,34 +58,41 @@ async function fetchOkxTicker(instId: string): Promise<number> {
   }
 }
 
-/** 从 OKX 获取 Sepolia ETH 与 Polkadot Hub PAS(DOT) 的美元价，用于 Your Balance */
-export async function fetchOkxPrices(): Promise<{ ETH: number; DOT: number }> {
-  const [ETH, DOT] = await Promise.all([
+/** 从 OKX 获取 Sepolia ETH、Polkadot Hub PAS(DOT)、INJ 的美元价（ETH/DOT 用 *-USD-SWAP，INJ 用 INJ-USDT-SWAP），用于 Your Balance */
+export async function fetchOkxPrices(): Promise<{ ETH: number; DOT: number; INJ: number }> {
+  const [ETH, DOT, INJ] = await Promise.all([
     fetchOkxTicker("ETH-USD-SWAP"),
     fetchOkxTicker("DOT-USD-SWAP"),
+    fetchOkxTicker("INJ-USDT-SWAP"),
   ]);
-  return { ETH, DOT };
+  return { ETH, DOT, INJ };
 }
 
-/** 根据 symbol 从 OKX 价格对象取价（仅对 ETH/DOT 相关符号有效） */
-export function getOkxPriceForSymbol(symbol: string, prices: { ETH: number; DOT: number }): number {
+/** 根据 symbol 从 OKX 价格对象取价（仅对 ETH/DOT/INJ 相关符号有效） */
+export function getOkxPriceForSymbol(symbol: string, prices: { ETH: number; DOT: number; INJ: number }): number {
   if (OKX_ETH_SYMBOLS.includes(symbol)) return prices.ETH;
   if (OKX_DOT_SYMBOLS.includes(symbol)) return prices.DOT;
+  if (OKX_INJ_SYMBOLS.includes(symbol)) return prices.INJ;
   return 0;
 }
 
 /** 从 CoinGecko 获取代币美元单价（无需 API Key）；ETH/DOT/PAS/mao* 使用 OKX */
 export async function fetchTokenPrices(symbols: string[]): Promise<Record<string, number>> {
-  const okxSymbols = symbols.filter((s) => OKX_ETH_SYMBOLS.includes(s) || OKX_DOT_SYMBOLS.includes(s));
-  const cgSymbols = symbols.filter((s) => !OKX_ETH_SYMBOLS.includes(s) && !OKX_DOT_SYMBOLS.includes(s));
+  const okxSymbols = symbols.filter(
+    (s) => OKX_ETH_SYMBOLS.includes(s) || OKX_DOT_SYMBOLS.includes(s) || OKX_INJ_SYMBOLS.includes(s)
+  );
+  const cgSymbols = symbols.filter(
+    (s) => !OKX_ETH_SYMBOLS.includes(s) && !OKX_DOT_SYMBOLS.includes(s) && !OKX_INJ_SYMBOLS.includes(s)
+  );
 
-  let okx: { ETH: number; DOT: number } = { ETH: 0, DOT: 0 };
+  let okx: { ETH: number; DOT: number; INJ: number } = { ETH: 0, DOT: 0, INJ: 0 };
   if (okxSymbols.length > 0) okx = await fetchOkxPrices();
 
   const out: Record<string, number> = {};
   for (const symbol of symbols) {
     if (OKX_ETH_SYMBOLS.includes(symbol)) out[symbol] = okx.ETH;
     else if (OKX_DOT_SYMBOLS.includes(symbol)) out[symbol] = okx.DOT;
+    else if (OKX_INJ_SYMBOLS.includes(symbol)) out[symbol] = okx.INJ;
     else out[symbol] = 0;
   }
 

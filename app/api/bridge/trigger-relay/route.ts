@@ -4,6 +4,7 @@ import path from "path";
 
 const SEPOLIA_CHAIN_ID = 11155111;
 const POLKADOT_HUB_CHAIN_ID = 420420417;
+const INJECTIVE_CHAIN_ID = 1439;
 
 /** POST: 前端在 lock/unlock 成功后调用。若传 sourceTxHash 则按该笔交易直接 relay（推荐）；否则按源链做一次区块轮询。 */
 export async function POST(request: NextRequest) {
@@ -25,7 +26,9 @@ export async function POST(request: NextRequest) {
         ? String(SEPOLIA_CHAIN_ID)
         : sourceChainId === POLKADOT_HUB_CHAIN_ID
           ? String(POLKADOT_HUB_CHAIN_ID)
-          : "all";
+          : sourceChainId === INJECTIVE_CHAIN_ID
+            ? String(INJECTIVE_CHAIN_ID)
+            : "all";
     const args = sourceTxHash ? [scriptPath, sourceTxHash] : [scriptPath, `--trigger=${trigger}`];
     const child = spawn("node", args, {
       cwd: process.cwd(),

@@ -4,6 +4,13 @@
  */
 
 import { ethers } from "ethers";
+import {
+  getCreditLedgerAddressForChain,
+  getStaticNetworkForStoreChain,
+  getStoreChainRpc,
+  STORE_INJECTIVE_EVM_CHAIN_ID,
+  STORE_POLKADOT_HUB_CHAIN_ID,
+} from "./storeChainConfig";
 
 const MON_DECIMALS = 1e6;
 
@@ -75,3 +82,81 @@ export async function settle(
 }
 
 // Note: recharge()/receive() are disabled in scheme A.
+
+const STORE_LEDGER_ORDER = [STORE_POLKADOT_HUB_CHAIN_ID, STORE_INJECTIVE_EVM_CHAIN_ID] as const;
+
+/** Sum MON balance across all configured Store ledgers (Hub + Injective). */
+export async function getCombinedStoreCreditMon(walletAddress: string): Promise<number> {
+  let total = 0;
+  for (const chainId of STORE_LEDGER_ORDER) {
+    const rpc = getStoreChainRpc(chainId);
+    const addr = getCreditLedgerAddressForChain(chainId);
+    if (!rpc || !addr) continue;
+    const net = getStaticNetworkForStoreChain(chainId);
+    if (!net) continue;
+    try {
+      const provider = new ethers.JsonRpcProvider(rpc, net);
+      total += await getCreditBalance(provider, addr, walletAddress);
+    } catch (_) {}
+  }
+  return total;
+}
+
+/**
+ * Prefer Hub, then Injective: first ledger with balance >= amountMon gets settle().
+ * Returns mint tx hash and which chain was used.
+ */
+export async function settleStoreCreditOnBestLedger(
+  operatorPk: string,
+  userAddress: string,
+  amountMon: number,
+  dayId: string,
+  settlementId: string
+): Promise<{ hash: string; chainId: number } | null> {
+  for (const chainId of STORE_LEDGER_ORDER) {
+    const rpc = getStoreChainRpc(chainId);
+    const addr = getCreditLedgerAddressForChain(chainId);
+    if (!rpc || !addr) continue;
+    const net = getStaticNetworkForStoreChain(chainId);
+    if (!net) continue;
+    try {
+      const provider = new ethers.JsonRpcProvider(rpc, net);
+      const bal = await getCreditBalance(provider, addr, userAddress);
+      if (bal + 1e-12 < amountMon) continue;
+      const signer = new ethers.Wallet(operatorPk, provider);
+      const { hash } = await settle(signer, addr, userAddress, amountMon, dayId, settlementId);
+      return { hash, chainId };
+    } catch (_) {}
+  }
+  return null;
+}
+
+export type PickLedgerForSettleResult = {
+  rpc: string;
+  contractAddress: string;
+  chainId: number;
+  openingMon: number;
+  provider: ethers.JsonRpcProvider;
+};
+
+/** First ledger (Hub then Injective) with on-chain balance >= usageMon. */
+export async function pickStoreLedgerForDailySettle(
+  walletAddress: string,
+  usageMon: number
+): Promise<PickLedgerForSettleResult | null> {
+  for (const chainId of STORE_LEDGER_ORDER) {
+    const rpc = getStoreChainRpc(chainId);
+    const addr = getCreditLedgerAddressForChain(chainId);
+    if (!rpc || !addr) continue;
+    const net = getStaticNetworkForStoreChain(chainId);
+    if (!net) continue;
+    try {
+      const provider = new ethers.JsonRpcProvider(rpc, net);
+      const openingMon = await getCreditBalance(provider, addr, walletAddress);
+      if (openingMon + 1e-12 >= usageMon) {
+        return { rpc, contractAddress: addr, chainId, openingMon, provider };
+      }
+    } catch (_) {}
+  }
+  return null;
+}

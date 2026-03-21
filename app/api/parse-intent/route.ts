@@ -1,7 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const MINIMAX_API_URL = "https://api.minimaxi.com/v1/text/chatcompletion_v2";
-const MODEL = "M2-her";
+/**
+ * MiniMax 文本对话（与官方 curl 示例一致：api.minimaxi.com、Bearer、JSON body）。
+ * 意图解析需非流式响应（stream: false）以便解析完整 JSON。
+ * 覆盖项：MINIMAX_API_URL、MINIMAX_MODEL、MINIMAX_TEMPERATURE、MINIMAX_MAX_COMPLETION_TOKENS、MINIMAX_TIMEOUT_MS
+ */
+const MINIMAX_API_URL =
+  process.env.MINIMAX_API_URL?.trim() || "https://api.minimaxi.com/v1/text/chatcompletion_v2";
+const MODEL = process.env.MINIMAX_MODEL?.trim() || "MiniMax-M2.7";
+
+const UPSTREAM_TIMEOUT_MS = Math.min(Math.max(Number(process.env.MINIMAX_TIMEOUT_MS) || 45000, 5000), 120000);
+
+const MINIMAX_TEMPERATURE = (() => {
+  const t = Number(process.env.MINIMAX_TEMPERATURE);
+  return Number.isFinite(t) && t > 0 && t <= 1 ? t : 0.3;
+})();
+
+const MINIMAX_MAX_COMPLETION_TOKENS = (() => {
+  const n = Number(process.env.MINIMAX_MAX_COMPLETION_TOKENS);
+  if (Number.isFinite(n) && n >= 64 && n <= 16384) return Math.floor(n);
+  return 2048;
+})();
 
 const SYSTEM_PROMPT = `You are a DeFi intent parser for Monallo AI Pay. Given a user message, determine the action and extract all relevant fields.
 
@@ -11,7 +30,7 @@ Output ONLY a single valid JSON object, no markdown, no code block, no explanati
   "sender": "sender address or empty string",
   "receiver": "recipient address or empty string",
   "amount": "numeric amount as string",
-  "token": "token symbol e.g. ETH, PAS",
+  "token": "token symbol e.g. ETH, PAS, INJ",
   "source_network": "source chain/network name or empty",
   "target_network": "target chain/network name or empty",
   "from_token": "empty string (Swap not supported)",
@@ -20,17 +39,19 @@ Output ONLY a single valid JSON object, no markdown, no code block, no explanati
 
 Rules:
 - action must be one of: Send, Bridge, Stake, Unknown. Use Unknown if the message is unclear or not a DeFi action.
-- **Polkadot-Hub Swap is under development.** If the user asks to swap or exchange tokens, output action: "Unknown" and leave from_token/to_token empty.
+- **Swap is under development.** If the user asks to swap or exchange tokens, output action: "Unknown" and leave from_token/to_token empty.
 - For Send/Transfer: extract receiver (0x... or address), amount, token. sender can be empty (current user).
-  **Monallo AI Pay Send is restricted by network:** (1) Polkadot Hub supports ONLY PAS for Send. (2) Sepolia supports ONLY ETH for Send.
-  Infer network from token: if user says PAS or Polkadot Hub → set source_network and target_network to "Polkadot Hub", token to "PAS". If user says ETH or Sepolia → set source_network and target_network to "Sepolia", token to "ETH".
+  **Monallo AI Pay Send is restricted by network:** (1) Polkadot Hub supports ONLY PAS for Send. (2) Sepolia supports ONLY ETH for Send. (3) Injective (Injective EVM testnet) supports ONLY INJ for Send.
+  Infer network from token: if user says PAS or Polkadot Hub → set source_network and target_network to "Polkadot Hub", token to "PAS". If user says ETH or Sepolia → set source_network and target_network to "Sepolia", token to "ETH". If user says INJ or Injective → set source_network and target_network to "Injective", token to "INJ".
 - For Bridge: extract amount, token, source_network, target_network, receiver if mentioned.
+  **Supported networks (Monallo lock-mint / unlock):** "Sepolia", "Polkadot Hub", "Injective" (Injective EVM testnet).
+  **Open lock directions (native token on source → wrapped on target):** Sepolia ETH → Polkadot Hub or Injective; Polkadot Hub PAS → Sepolia or Injective; Injective INJ → Sepolia or Polkadot Hub.
+  **Open unlock directions (wrapped on source → native on target):** maoETH.Sepolia from Polkadot Hub or Injective → Sepolia ETH; maoPAS.PH from Sepolia or Injective → Polkadot Hub PAS; maoINJ.Injective from Sepolia or Polkadot Hub → Injective INJ.
+  **NOT supported (do NOT output as a normal executable Bridge — use action "Unknown" or set token/source/target so the product can reject):** moving wrapped to another chain as the same wrapped asset (e.g. Sepolia maoPAS.PH → Injective maoPAS.PH; Hub maoETH.Sepolia → Injective maoETH.Sepolia; cross-chain maoINJ between Sepolia and Hub only as wrapped; etc.). These are "wrapped-to-wrapped" hops and are closed.
   **Bridge direction (lock vs unlock):**
-  - "Bridge X ETH to Polkadot Hub" or "Bridge X ETH to Polkadot" = lock: source_network = "Sepolia", target_network = "Polkadot Hub", token = "ETH".
-  - "Bridge X PAS to Sepolia" (native PAS from Polkadot Hub to Sepolia) = lock from Polkadot Hub: source_network = "Polkadot Hub", target_network = "Sepolia", token = "PAS".
-  - "Bridge X maoETH.Sepolia to Sepolia" or "bridge maoETH to Sepolia" = UNLOCK (bridge back): user holds wrapped maoETH.Sepolia on Polkadot Hub and wants native ETH on Sepolia. Set source_network = "Polkadot Hub", target_network = "Sepolia", token = "maoETH.Sepolia".
-  - "Bridge X maoPAS to Polkadot Hub" or "bridge maoPAS.Polkadot-Hub to Polkadot Hub" = UNLOCK (bridge back): user holds wrapped maoPAS on Sepolia and wants native PAS on Polkadot Hub. Set source_network = "Sepolia", target_network = "Polkadot Hub", token = "maoPAS.PH".
-  Rule: wrapped token (maoETH.Sepolia, maoPAS.PH) always indicates the chain where the user currently holds it = source_network; the chain they say "to X" = target_network.
+  - Lock examples: "Bridge X ETH to Polkadot Hub" → source Sepolia, target Polkadot Hub, token ETH. "Bridge X ETH to Injective" → Sepolia, Injective, ETH. "Bridge X PAS to Injective" → Polkadot Hub, Injective, PAS. "Bridge X INJ to Sepolia" → Injective, Sepolia, INJ.
+  - Unlock examples: maoETH.Sepolia on Polkadot Hub → Sepolia native ETH: source Polkadot Hub, target Sepolia, token maoETH.Sepolia. maoPAS on Sepolia → Polkadot Hub: source Sepolia, target Polkadot Hub, token maoPAS.PH. maoINJ on Sepolia → Injective: source Sepolia, target Injective, token maoINJ.Injective.
+  Rule: for wrapped tokens, source_network = chain where the user holds the wrapped token; target_network = chain where they want the native asset (unlock) or wrapped mint (lock uses native token on source only).
 - For Stake: extract amount, token. receiver can be validator or empty.
 - Use empty string "" for any missing field. Amount must be a string number.`;
 
@@ -108,29 +129,54 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "message required" }, { status: 400 });
     }
 
-    const res = await fetch(MINIMAX_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", name: "AI Assistant", content: SYSTEM_PROMPT },
-          { role: "user", name: "User", content: message },
-        ],
-        temperature: 0.2,
-        top_p: 0.95,
-        max_completion_tokens: 512,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(MINIMAX_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: message },
+          ],
+          stream: false,
+          temperature: MINIMAX_TEMPERATURE,
+          top_p: 0.95,
+          max_completion_tokens: MINIMAX_MAX_COMPLETION_TOKENS,
+        }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timeoutId);
+      const aborted = e instanceof Error && e.name === "AbortError";
+      console.error("MiniMax fetch error", aborted ? "timeout" : e);
+      return NextResponse.json(
+        {
+          error: aborted ? "MiniMax request timed out" : "MiniMax connection failed",
+          hint: "Check MINIMAX_API_KEY and network access; default https://api.minimaxi.com (override with MINIMAX_API_URL).",
+        },
+        { status: 502 }
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error("MiniMax API error", res.status, errText);
+      console.error("MiniMax API error", MINIMAX_API_URL, res.status, errText.slice(0, 500));
       return NextResponse.json(
-        { error: "Intent parsing failed", details: errText },
+        {
+          error: "MiniMax HTTP error",
+          upstreamStatus: res.status,
+          details: errText.slice(0, 800),
+        },
         { status: 502 }
       );
     }
@@ -150,18 +196,37 @@ export async function POST(request: NextRequest) {
     }
 
     if (data.base_resp?.status_code !== 0 && data.base_resp?.status_code !== undefined) {
+      const code = data.base_resp.status_code;
       const msg = data.base_resp?.status_msg ?? "API error";
+      console.error("MiniMax base_resp", code, msg);
       return NextResponse.json(
-        { error: msg, code: data.base_resp?.status_code },
+        {
+          error: msg,
+          code,
+          hint:
+            code === 1004
+              ? "Invalid or expired API key; check MINIMAX_API_KEY"
+              : code === 1008
+                ? "Insufficient account balance"
+                : code === 1002
+                  ? "Rate limited; try again later"
+                  : undefined,
+        },
         { status: 502 }
       );
     }
 
-    const content = (data.choices?.[0]?.message?.content ?? "").trim();
+    const choiceMsg = data.choices?.[0]?.message;
+    const content = (choiceMsg?.content ?? "").trim();
     const parsed = extractJson(content);
     if (!parsed) {
+      console.error("parse-intent extractJson failed, raw length", content.length, content.slice(0, 200));
       return NextResponse.json(
-        { error: "Could not parse intent from model response", raw: content.slice(0, 500) },
+        {
+          error: "Could not parse intent from model response",
+          raw: content.slice(0, 500),
+          hint: "Model did not return parseable JSON; check MINIMAX_MODEL (default MiniMax-M2.7) or lower MINIMAX_TEMPERATURE.",
+        },
         { status: 502 }
       );
     }

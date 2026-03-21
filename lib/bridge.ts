@@ -1,15 +1,17 @@
 /**
  * Monallo Bridge：源链 lock 调用与配置。
  * 目标链铸造 maoXXX.SourceChain 由中继完成，不在此调用。
+ * 三链：Sepolia、Polkadot Hub、Injective EVM（1439）。
  */
 
 import { ethers } from "ethers";
 
 export const SEPOLIA_CHAIN_ID = 11155111;
 export const POLKADOT_HUB_CHAIN_ID = 420420417;
+export const INJECTIVE_CHAIN_ID = 1439;
 
-/** 支持的桥接链 */
-export const BRIDGE_CHAIN_IDS = [SEPOLIA_CHAIN_ID, POLKADOT_HUB_CHAIN_ID] as const;
+/** 支持的桥接链（EVM chainId） */
+export const BRIDGE_CHAIN_IDS = [SEPOLIA_CHAIN_ID, POLKADOT_HUB_CHAIN_ID, INJECTIVE_CHAIN_ID] as const;
 
 const LOCK_ABI = [
   "function lock(address recipient, uint256 destinationChainId) external payable",
@@ -29,10 +31,22 @@ const WRAPPED_UNLOCK_ABI = [
 
 export const LOCK_ABI_FULL = LOCK_ABI;
 
-/** 桥 Lock 合约地址（部署后填入 .env：NEXT_PUBLIC_BRIDGE_LOCK_SEPOLIA, NEXT_PUBLIC_BRIDGE_LOCK_POLKADOT_HUB） */
+function envAddr(...keys: (string | undefined)[]): string {
+  for (const k of keys) {
+    const v = k?.trim();
+    if (v) return v;
+  }
+  return "";
+}
+
+/** 桥 Lock 合约地址 */
 const BRIDGE_LOCK_ADDRESSES: Record<number, string> = {
   [SEPOLIA_CHAIN_ID]: process.env.NEXT_PUBLIC_BRIDGE_LOCK_SEPOLIA ?? "",
   [POLKADOT_HUB_CHAIN_ID]: process.env.NEXT_PUBLIC_BRIDGE_LOCK_POLKADOT_HUB ?? "",
+  [INJECTIVE_CHAIN_ID]: envAddr(
+    process.env.NEXT_PUBLIC_BRIDGE_LOCK_INJECTIVE,
+    process.env.BRIDGE_LOCK_INJECTIVE
+  ),
 };
 
 export function getBridgeLockAddress(chainId: number): string | null {
@@ -40,20 +54,24 @@ export function getBridgeLockAddress(chainId: number): string | null {
   return addr && ethers.isAddress(addr) ? addr : null;
 }
 
-/** 目标链上 wrapped 代币地址：key = "destinationChainId_sourceChainId"（如 420420417_11155111 = Sepolia→Polkadot Hub 时在 Polkadot Hub 上的 maoETH.Sepolia） */
+/** 目标链上 wrapped：key = destinationChainId_sourceChainId */
 const WRAPPED_TOKEN_ADDRESSES: Record<string, string> = {
-  [`${POLKADOT_HUB_CHAIN_ID}_${SEPOLIA_CHAIN_ID}`]: process.env.WRAPPED_ETH_POLKADOT_HUB ?? "",
-  [`${SEPOLIA_CHAIN_ID}_${POLKADOT_HUB_CHAIN_ID}`]: process.env.WRAPPED_PAS_SEPOLIA ?? "",
+  [`${POLKADOT_HUB_CHAIN_ID}_${SEPOLIA_CHAIN_ID}`]: envAddr(process.env.WRAPPED_ETH_POLKADOT_HUB, process.env.NEXT_PUBLIC_WRAPPED_ETH_POLKADOT_HUB),
+  [`${SEPOLIA_CHAIN_ID}_${POLKADOT_HUB_CHAIN_ID}`]: envAddr(process.env.WRAPPED_PAS_SEPOLIA, process.env.NEXT_PUBLIC_WRAPPED_PAS_SEPOLIA),
+  [`${INJECTIVE_CHAIN_ID}_${SEPOLIA_CHAIN_ID}`]: envAddr(process.env.WRAPPED_ETH_INJECTIVE, process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE),
+  [`${INJECTIVE_CHAIN_ID}_${POLKADOT_HUB_CHAIN_ID}`]: envAddr(process.env.WRAPPED_PAS_INJECTIVE, process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE),
+  [`${SEPOLIA_CHAIN_ID}_${INJECTIVE_CHAIN_ID}`]: envAddr(process.env.WRAPPED_INJ_SEPOLIA, process.env.NEXT_PUBLIC_WRAPPED_INJ_SEPOLIA),
+  [`${POLKADOT_HUB_CHAIN_ID}_${INJECTIVE_CHAIN_ID}`]: envAddr(process.env.WRAPPED_INJ_POLKADOT_HUB, process.env.NEXT_PUBLIC_WRAPPED_INJ_POLKADOT_HUB),
 };
 
-/** 中继用：根据目标链与源链 ID 取 wrapped 代币合约地址（lock-mint 时目标链上的 wrapped 地址） */
+/** 中继用：根据目标链与源链 ID 取 wrapped（lock-mint 时目标链上的 wrapped） */
 export function getWrappedTokenAddress(destinationChainId: number, sourceChainId: number): string | null {
   const key = `${destinationChainId}_${sourceChainId}`;
   const addr = WRAPPED_TOKEN_ADDRESSES[key]?.trim();
   return addr && ethers.isAddress(addr) ? addr : null;
 }
 
-/** 解锁时：在 sourceChainId 上的 wrapped 代币合约地址（即 getWrappedTokenAddress(sourceChainId, destinationChainId)） */
+/** 解锁时：在 sourceChainId 上持有的 wrapped（即 getWrappedTokenAddress(sourceChainId, destinationChainId)） */
 export function getWrappedTokenAddressForUnlock(sourceChainId: number, destinationChainId: number): string | null {
   return getWrappedTokenAddress(sourceChainId, destinationChainId);
 }
@@ -68,10 +86,6 @@ export interface LockViaBridgeParams {
   amount: string;
 }
 
-/**
- * 在源链调用桥 Lock 合约的 lock(recipient, destinationChainId)，转入 amount 原生代币。
- * 会先 switch 到 sourceChainId。
- */
 export async function lockViaBridge(params: LockViaBridgeParams): Promise<{ hash: string }> {
   const { ethereum, sourceChainId, lockContractAddress, recipient, destinationChainId, amount } = params;
   const provider = new ethers.BrowserProvider(ethereum as unknown as ethers.Eip1193Provider);
@@ -104,9 +118,6 @@ export interface UnlockViaBridgeParams {
   amount: string;
 }
 
-/**
- * 跨链回去：在源链调用 wrapped 代币的 unlock(recipient, amount, destinationChainId)，销毁 wrapped，中继将在目标链 release 原生资产。
- */
 export async function unlockViaBridge(params: UnlockViaBridgeParams): Promise<{ hash: string }> {
   const { ethereum, sourceChainId, wrappedTokenAddress, recipient, destinationChainId, amount } = params;
   const provider = new ethers.BrowserProvider(ethereum as unknown as ethers.Eip1193Provider);
