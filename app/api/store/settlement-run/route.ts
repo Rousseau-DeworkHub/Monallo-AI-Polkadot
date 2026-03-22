@@ -11,6 +11,7 @@ import {
   getStaticNetworkForStoreChain,
   getStoreChainRpc,
   STORE_INJECTIVE_EVM_CHAIN_ID,
+  STORE_PLATON_DEV_CHAIN_ID,
   STORE_POLKADOT_HUB_CHAIN_ID,
 } from "@/lib/storeChainConfig";
 
@@ -41,9 +42,10 @@ export async function POST(request: NextRequest) {
     const operatorPk = process.env.STORE_OPERATOR_PRIVATE_KEY;
     const hubLedger = getCreditLedgerAddressForChain(STORE_POLKADOT_HUB_CHAIN_ID);
     const injLedger = getCreditLedgerAddressForChain(STORE_INJECTIVE_EVM_CHAIN_ID);
-    if (!operatorPk || (!hubLedger && !injLedger)) {
+    const platonLedger = getCreditLedgerAddressForChain(STORE_PLATON_DEV_CHAIN_ID);
+    if (!operatorPk || (!hubLedger && !injLedger && !platonLedger)) {
       return NextResponse.json(
-        { error: "Credit ledger (Hub and/or Injective) or operator not configured" },
+        { error: "Credit ledger (Hub, Injective, and/or PlatON Dev) or operator not configured" },
         { status: 503 }
       );
     }
@@ -71,20 +73,36 @@ export async function POST(request: NextRequest) {
         ledgerAddress = pick.contractAddress;
       } else {
         try {
-          const hubRpc = getStoreChainRpc(STORE_POLKADOT_HUB_CHAIN_ID);
-          const hubNet = getStaticNetworkForStoreChain(STORE_POLKADOT_HUB_CHAIN_ID);
-          if (hubRpc && hubLedger && hubNet) {
-            ledgerProvider = new ethers.JsonRpcProvider(hubRpc, hubNet);
-            ledgerAddress = hubLedger;
-          } else {
-            const injRpc = getStoreChainRpc(STORE_INJECTIVE_EVM_CHAIN_ID);
-            const injNet = getStaticNetworkForStoreChain(STORE_INJECTIVE_EVM_CHAIN_ID);
-            if (!injRpc || !injLedger || !injNet) throw new Error("No ledger RPC");
-            ledgerProvider = new ethers.JsonRpcProvider(injRpc, injNet);
-            ledgerAddress = injLedger;
+          const fallbackOrder = [
+            STORE_POLKADOT_HUB_CHAIN_ID,
+            STORE_INJECTIVE_EVM_CHAIN_ID,
+            STORE_PLATON_DEV_CHAIN_ID,
+          ] as const;
+          let opened = false;
+          let pFallback: ethers.JsonRpcProvider | undefined;
+          let addrFallback: string | undefined;
+          let openingFallback = 0;
+          for (const cid of fallbackOrder) {
+            const rpc = getStoreChainRpc(cid);
+            const addr = getCreditLedgerAddressForChain(cid);
+            const net = getStaticNetworkForStoreChain(cid);
+            if (!rpc || !addr || !net) continue;
+            try {
+              const p = new ethers.JsonRpcProvider(rpc, net);
+              const balanceMon = await getCreditBalance(p, addr, row.wallet_address);
+              pFallback = p;
+              addrFallback = addr;
+              openingFallback = Math.round(balanceMon * MON_RAW);
+              opened = true;
+              break;
+            } catch (_) {
+              continue;
+            }
           }
-          const balanceMon = await getCreditBalance(ledgerProvider, ledgerAddress, row.wallet_address);
-          openingRaw = Math.round(balanceMon * MON_RAW);
+          if (!opened || !pFallback || !addrFallback) throw new Error("No ledger RPC");
+          ledgerProvider = pFallback;
+          ledgerAddress = addrFallback;
+          openingRaw = openingFallback;
         } catch (e) {
           results.push({ wallet: row.wallet_address, status: "error", tx_hash: (e as Error).message });
           continue;

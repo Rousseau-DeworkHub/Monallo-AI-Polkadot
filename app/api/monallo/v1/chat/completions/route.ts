@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
         dayId,
         settlementId
       );
-      if (settled) setStoreUsageEventSettledMon(usageEventId, chargedMonRaw, settled.hash);
+      if (settled) setStoreUsageEventSettledMon(usageEventId, chargedMonRaw, settled.hash, settled.chainId);
     } catch (e) {
       // If on-chain settle fails, leave settled_mon=0 so daily settlement-run can retry.
       console.warn("Immediate MON settle failed", e);

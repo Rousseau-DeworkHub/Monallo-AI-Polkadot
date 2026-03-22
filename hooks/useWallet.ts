@@ -137,6 +137,22 @@ export const SUPPORTED_CHAINS: ChainInfo[] = [
     symbol: "INJ",
     explorer: "https://testnet.blockscout.injective.network",
   },
+  // PlatON Dev (EVM testnet) — https://devnet3scan.platon.network/
+  {
+    id: "platon-dev",
+    name: "PlatON Dev",
+    icon: "◆",
+    logo: "https://www.okx.com/cdn/oksupport/asset/currency/icon/lat.png?x-oss-process=image/format,webp/ignore-error,1",
+    color: "#217EFF",
+    type: "EVM",
+    rpcUrl:
+      typeof process !== "undefined" && process.env?.NEXT_PUBLIC_RPC_PlatON?.trim()
+        ? process.env.NEXT_PUBLIC_RPC_PlatON.trim()
+        : "https://devnet3openapi.platon.network/rpc",
+    chainId: 20250407,
+    symbol: "LAT",
+    explorer: "https://devnet3scan.platon.network",
+  },
 ];
 
 export interface WalletState {

@@ -27,6 +27,11 @@ const INJECTIVE_TESTNET_RPC_URLS = [
   "https://k8s.testnet.json-rpc.injective.network/",
 ].filter((u): u is string => Boolean(u));
 
+const PLATON_DEV_RPC_URLS = [
+  process.env.RPC_PlatON?.trim(),
+  "https://devnet3openapi.platon.network/rpc",
+].filter((u): u is string => Boolean(u));
+
 const EVM_CHAINS: Record<
   number,
   { rpcUrls: string[]; tokens: TokenSpec[] }
@@ -56,6 +61,21 @@ const EVM_CHAINS: Record<
         : []),
       ...(process.env.WRAPPED_ETH_INJECTIVE?.trim()
         ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", decimals: 18, contract: process.env.WRAPPED_ETH_INJECTIVE!.trim(), icon: "SEPOLIA_ETH" } as TokenSpec]
+        : []),
+    ],
+  },
+  20250407: {
+    rpcUrls: PLATON_DEV_RPC_URLS.length > 0 ? PLATON_DEV_RPC_URLS : ["https://devnet3openapi.platon.network/rpc"],
+    tokens: [
+      { symbol: "LAT", name: "PlatON LAT", decimals: 18, icon: "LAT" },
+      ...(process.env.WRAPPED_ETH_PLATON_DEV?.trim()
+        ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", decimals: 18, contract: process.env.WRAPPED_ETH_PLATON_DEV!.trim(), icon: "SEPOLIA_ETH" } as TokenSpec]
+        : []),
+      ...(process.env.WRAPPED_PAS_PLATON_DEV?.trim()
+        ? [{ symbol: "maoPAS.PH", name: "maoPAS.PH", decimals: 18, contract: process.env.WRAPPED_PAS_PLATON_DEV!.trim(), icon: "PAS" } as TokenSpec]
+        : []),
+      ...(process.env.WRAPPED_INJ_PLATON_DEV?.trim()
+        ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", decimals: 18, contract: process.env.WRAPPED_INJ_PLATON_DEV!.trim(), icon: "INJ" } as TokenSpec]
         : []),
     ],
   },

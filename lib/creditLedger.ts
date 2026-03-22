@@ -9,6 +9,7 @@ import {
   getStaticNetworkForStoreChain,
   getStoreChainRpc,
   STORE_INJECTIVE_EVM_CHAIN_ID,
+  STORE_PLATON_DEV_CHAIN_ID,
   STORE_POLKADOT_HUB_CHAIN_ID,
 } from "./storeChainConfig";
 
@@ -83,9 +84,9 @@ export async function settle(
 
 // Note: recharge()/receive() are disabled in scheme A.
 
-const STORE_LEDGER_ORDER = [STORE_POLKADOT_HUB_CHAIN_ID, STORE_INJECTIVE_EVM_CHAIN_ID] as const;
+const STORE_LEDGER_ORDER = [STORE_POLKADOT_HUB_CHAIN_ID, STORE_INJECTIVE_EVM_CHAIN_ID, STORE_PLATON_DEV_CHAIN_ID] as const;
 
-/** Sum MON balance across all configured Store ledgers (Hub + Injective). */
+/** Sum MON balance across all configured Store ledgers (Hub, Injective, PlatON Dev). */
 export async function getCombinedStoreCreditMon(walletAddress: string): Promise<number> {
   let total = 0;
   for (const chainId of STORE_LEDGER_ORDER) {
@@ -103,8 +104,8 @@ export async function getCombinedStoreCreditMon(walletAddress: string): Promise<
 }
 
 /**
- * Prefer Hub, then Injective: first ledger with balance >= amountMon gets settle().
- * Returns mint tx hash and which chain was used.
+ * Prefer Hub, then Injective, then PlatON Dev: first ledger with balance >= amountMon gets settle().
+ * Returns settle tx hash and which chain was used.
  */
 export async function settleStoreCreditOnBestLedger(
   operatorPk: string,
@@ -139,7 +140,7 @@ export type PickLedgerForSettleResult = {
   provider: ethers.JsonRpcProvider;
 };
 
-/** First ledger (Hub then Injective) with on-chain balance >= usageMon. */
+/** First ledger (Hub → Injective → PlatON Dev) with on-chain balance >= usageMon. */
 export async function pickStoreLedgerForDailySettle(
   walletAddress: string,
   usageMon: number

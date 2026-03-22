@@ -81,10 +81,11 @@ const TokenLogos: Record<string, string> = {
   SEPOLIA_ETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png",
   PAS: "https://www.okx.com/cdn/oksupport/asset/currency/icon/dot.png",
   INJ: "https://www.okx.com/cdn/oksupport/asset/currency/icon/inj20250424102359.png?x-oss-process=image/format,webp/ignore-error,1",
+  LAT: "https://www.okx.com/cdn/oksupport/asset/currency/icon/lat.png?x-oss-process=image/format,webp/ignore-error,1",
 };
 
-/** ai-pay 网络选择器：三链 EVM 测试网（与 Monallo Bridge 一致） */
-const AI_PAY_EVM_SELECTOR_IDS = new Set(["sepolia", "polkadot-hub-testnet", "injective-testnet"]);
+/** ai-pay 网络选择器：三链 + PlatON Dev EVM 测试网 */
+const AI_PAY_EVM_SELECTOR_IDS = new Set(["sepolia", "polkadot-hub-testnet", "injective-testnet", "platon-dev"]);
 
 function isAiPayTestnetChainId(id: string): boolean {
   return AI_PAY_EVM_SELECTOR_IDS.has(id);
@@ -123,6 +124,18 @@ const TOKENS_BY_CHAIN: Record<string, TokenBalance[]> = {
       : []),
     ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim()
       ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", balance: "0", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_INJECTIVE.trim(), icon: "SEPOLIA_ETH" }]
+      : []),
+  ],
+  "platon-dev": [
+    { symbol: "LAT", name: "PlatON LAT", balance: "0", decimals: 18, icon: "LAT" },
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV.trim()
+      ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", balance: "0", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV.trim(), icon: "SEPOLIA_ETH" }]
+      : []),
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV.trim()
+      ? [{ symbol: "maoPAS.PH", name: "maoPAS.PH", balance: "0", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV.trim(), icon: "PAS" }]
+      : []),
+    ...(typeof process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV.trim()
+      ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", balance: "0", decimals: 18, contract: process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV.trim(), icon: "INJ" }]
       : []),
   ],
 };
@@ -222,6 +235,7 @@ function getCanonicalChainKey(name: string): string {
   if (n.includes("maoeth") || n.includes("maopas") || n.includes("maoinj")) return "";
   if (n.includes("sepolia")) return "sepolia";
   if (n.includes("injective")) return "injective-testnet";
+  if (n.includes("platon")) return "platon-dev";
   if (n.includes("polkadot") || n.includes("hub")) return "polkadot-hub";
   if (/\bpas\b/.test(n)) return "polkadot-hub";
   return n;
@@ -229,7 +243,7 @@ function getCanonicalChainKey(name: string): string {
 
 /**
  * 将 LLM / 用户写的网络名映射到 SUPPORTED_CHAINS。
- * 须优先匹配 AI Pay 三条 EVM 测试网：否则 "Polkadot Hub" 会先命中数组里更靠前的主网 Polkadot（id polkadot），导致 Testnet 徽标丢失。
+ * 须优先匹配 AI Pay 各 EVM 测试网（含 PlatON Dev）：否则 "Polkadot Hub" 会先命中数组里更靠前的主网 Polkadot（id polkadot），导致 Testnet 徽标丢失。
  */
 function resolveChainFromNetworkLabel(name: string): ChainInfo | undefined {
   const raw = (name || "").trim();
@@ -239,9 +253,11 @@ function resolveChainFromNetworkLabel(name: string): ChainInfo | undefined {
   const sep = SUPPORTED_CHAINS.find((c) => c.id === "sepolia");
   const hub = SUPPORTED_CHAINS.find((c) => c.id === "polkadot-hub-testnet");
   const inj = SUPPORTED_CHAINS.find((c) => c.id === "injective-testnet");
+  const platonDev = SUPPORTED_CHAINS.find((c) => c.id === "platon-dev");
 
   if (sep && (n.includes("sepolia") || sep.name.toLowerCase() === n)) return sep;
   if (inj && (n.includes("injective") || inj.name.toLowerCase() === n)) return inj;
+  if (platonDev && (n.includes("platon") || platonDev.name.toLowerCase() === n)) return platonDev;
   if (hub) {
     const hn = hub.name.toLowerCase();
     if (
@@ -265,12 +281,13 @@ function resolveChainFromNetworkLabel(name: string): ChainInfo | undefined {
   });
 }
 
-/** Send 规则：Hub 仅 PAS；Sepolia 仅 ETH；Injective 仅 INJ。根据 token 推断网络 */
+/** Send 规则：Hub 仅 PAS；Sepolia 仅 ETH；Injective 仅 INJ；PlatON Dev 仅 LAT。根据 token 推断网络 */
 function inferSendNetworkFromToken(token: string): string {
   const t = (token || "").trim().toUpperCase();
   if (t === "PAS") return "Polkadot Hub";
   if (t === "ETH") return "Sepolia";
   if (t === "INJ") return "Injective";
+  if (t === "LAT") return "PlatON Dev";
   return "";
 }
 
@@ -292,11 +309,12 @@ function getNativeTokenSymbolForChain(networkName: string): string {
   const n = (networkName || "").trim().toLowerCase();
   if (n.includes("sepolia")) return "ETH";
   if (n.includes("injective")) return "INJ";
+  if (n.includes("platon")) return "LAT";
   if (n.includes("polkadot") || n.includes("hub") || n.includes("pas")) return "PAS";
   return "";
 }
 
-/** Normalize intent: default source from token (PAS→Hub, ETH→Sepolia, INJ→Injective) 或当前链名；仅当 source ≠ target 时升为 Bridge。 */
+/** Normalize intent: default source from token (PAS→Hub, ETH→Sepolia, INJ→Injective, LAT→PlatON Dev) 或当前链名；仅当 source ≠ target 时升为 Bridge。 */
 function normalizeSendBridgeIntent(
   intent: ParsedIntent,
   currentChainName: string
@@ -1018,7 +1036,7 @@ function HistoryModal({
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-white">Transaction History</h2>
-                  <p className="text-xs text-gray-500">Send · Bridge (3 chains) · Stake</p>
+                  <p className="text-xs text-gray-500">Send · Bridge (multi-chain) · Stake</p>
                 </div>
               </div>
               <button type="button" onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
@@ -1493,7 +1511,7 @@ export default function AIPayPage() {
     setBridgeType(null);
   }, [address]);
 
-  // Your balance：ETH / PAS(DOT) / INJ 及 mao* 价格每 5 秒从 OKX 刷新（await 后校验链，避免旧定时器把 Hub 行项目刷回界面）
+  // Your balance：ETH / PAS(DOT) / INJ / LAT 及 mao* 价格每 5 秒从 OKX 刷新（await 后校验链，避免旧定时器把 Hub 行项目刷回界面）
   useEffect(() => {
     if (!isConnected || !chain || tokenBalances.length === 0) return;
     const chainIdSnapshot = chain.id;
@@ -1570,20 +1588,30 @@ export default function AIPayPage() {
   const parseIntentLocal = (text: string): ParsedIntent => {
     const l = text.toLowerCase();
     const empty: ParsedIntent = { action: "Unknown", sender: "", receiver: "", amount: "", token: "", source_network: "", target_network: "", from_token: "", to_token: "" };
-    const amt = text.match(/(\d+\.?\d*)\s*(?:eth|usdt|dot|pas|inj| Dai)?/i)?.[1] ?? "";
+    const amt = text.match(/(\d+\.?\d*)\s*(?:eth|usdt|dot|pas|inj|lat| Dai)?/i)?.[1] ?? "";
     const addr = text.match(/0x[a-fA-F0-9]{40}/)?.[0] ?? "";
     let token: string;
     if (l.includes("dot")) token = "DOT";
     else if (l.includes("maoeth") || l.includes("mao eth")) token = "maoETH.Sepolia";
     else if (l.includes("maopas") || l.includes("mao pas")) token = "maoPAS.PH";
     else if (l.includes("maoinj") || l.includes("mao inj")) token = "maoINJ.Injective";
+    else if (/\blat\b/.test(l) || l.includes("platon")) token = "LAT";
     else if (l.includes("pas")) token = "PAS";
     else if (l.includes("inj")) token = "INJ";
     else if (l.includes("usdt")) token = "USDT";
     else if (l.includes("dai")) token = "DAI";
     else token = "ETH";
     if (l.includes("send") || l.includes("transfer") || l.includes("转")) {
-      const network = token === "PAS" ? "Polkadot Hub" : token === "ETH" ? "Sepolia" : token === "INJ" ? "Injective" : "";
+      const network =
+        token === "PAS"
+          ? "Polkadot Hub"
+          : token === "ETH"
+            ? "Sepolia"
+            : token === "INJ"
+              ? "Injective"
+              : token === "LAT"
+                ? "PlatON Dev"
+                : "";
       return { ...empty, action: "Send", amount: amt, token, receiver: addr, source_network: network, target_network: network };
     }
     if (l.includes("swap") || l.includes("换") || l.includes("exchange")) {
@@ -1715,7 +1743,7 @@ export default function AIPayPage() {
             removeParsingAndAppend(SECONDARY_WRAPPED_BRIDGE_MSG_EN);
             return;
           }
-          const errMsg = (res && typeof data.error === "string") ? data.error : "Network or service error. Please try again. Examples: \"Send 0.01 INJ to 0x...\", \"Bridge 0.1 ETH to Injective\", \"Bridge 0.01 INJ to Sepolia\".";
+          const errMsg = (res && typeof data.error === "string") ? data.error : "Network or service error. Please try again. Examples: \"Send 0.01 LAT to 0x...\", \"Send 0.01 INJ to 0x...\", \"Bridge 0.1 ETH to Injective\", \"Bridge 0.01 INJ to Sepolia\".";
           removeParsingAndAppend(errMsg);
           return;
         }
@@ -1744,7 +1772,7 @@ export default function AIPayPage() {
             removeParsingAndAppend(SECONDARY_WRAPPED_BRIDGE_MSG_EN);
             return;
           }
-          removeParsingAndAppend("No DeFi action recognized (Send / Bridge / Stake). Examples: \"Bridge 0.1 ETH to Injective\", \"Bridge 0.01 PAS to Injective\", \"Bridge 0.02 INJ to Sepolia\". Swap coming soon.");
+          removeParsingAndAppend("No DeFi action recognized (Send / Bridge / Stake). Examples: \"Send 0.01 LAT to 0x...\", \"Bridge 0.1 ETH to Injective\", \"Bridge 0.01 PAS to Injective\", \"Bridge 0.02 INJ to Sepolia\". Swap coming soon.");
           return;
         }
         const summary = `${intent.action}${intent.amount ? ` ${intent.amount} ${intent.token || intent.from_token || ""}` : ""}${intent.receiver ? ` → ${intent.receiver.slice(0, 10)}...` : ""}`;
@@ -1798,6 +1826,7 @@ export default function AIPayPage() {
       if (k === "sepolia") sendToken = "ETH";
       else if (k === "polkadot-hub") sendToken = "PAS";
       else if (k === "injective-testnet") sendToken = "INJ";
+      else if (k === "platon-dev") sendToken = "LAT";
     }
     const sendSupportedChains =
       sendToken === "ETH"
@@ -1806,9 +1835,11 @@ export default function AIPayPage() {
           ? SUPPORTED_CHAINS.filter((c) => c.id === "polkadot-hub-testnet")
           : sendToken === "INJ"
             ? SUPPORTED_CHAINS.filter((c) => c.id === "injective-testnet")
-            : [];
-    if (isSend && sendToken !== "ETH" && sendToken !== "PAS" && sendToken !== "INJ") {
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: "assistant", content: "❌ Send is only supported for ETH (Sepolia), PAS (Polkadot Hub), and INJ (Injective Testnet).", timestamp: Date.now() }]);
+            : sendToken === "LAT"
+              ? SUPPORTED_CHAINS.filter((c) => c.id === "platon-dev")
+              : [];
+    if (isSend && sendToken !== "ETH" && sendToken !== "PAS" && sendToken !== "INJ" && sendToken !== "LAT") {
+      setMessages(prev => [...prev, { id: Date.now().toString(), role: "assistant", content: "❌ Send is only supported for ETH (Sepolia), PAS (Polkadot Hub), INJ (Injective Testnet), and LAT (PlatON Dev).", timestamp: Date.now() }]);
       setPendingIntent(null);
       setIsConfirming(false);
       return;
@@ -2084,7 +2115,14 @@ export default function AIPayPage() {
 
   const handleQuickAction = (action: string) => {
     if (!isConnected) { setShowWalletModal(true); return; }
-    const primary = chain?.id === "polkadot-hub-testnet" ? "PAS" : chain?.id === "injective-testnet" ? "INJ" : "ETH";
+    const primary =
+      chain?.id === "polkadot-hub-testnet"
+        ? "PAS"
+        : chain?.id === "injective-testnet"
+          ? "INJ"
+          : chain?.id === "platon-dev"
+            ? "LAT"
+            : "ETH";
     const p: Record<string, string> = {
       Send: `Send 0.001 ${primary} to 0x`,
       Bridge:
@@ -2092,7 +2130,9 @@ export default function AIPayPage() {
           ? "Bridge 0.1 ETH to Polkadot Hub"
           : primary === "INJ"
             ? "Bridge 0.01 INJ to Sepolia"
-            : "Bridge 0.1 PAS to Sepolia",
+            : primary === "LAT"
+              ? "Bridge 0.01 LAT to Sepolia"
+              : "Bridge 0.1 PAS to Sepolia",
       Stake: `Stake 1 ${primary}`,
     };
     setInput(p[action] || "");
@@ -2179,7 +2219,7 @@ export default function AIPayPage() {
                   <span className="text-sm text-[#9945FF]">AI-Powered DeFi</span>
                 </div>
                 <h1 className="text-3xl lg:text-4xl font-bold text-white mb-4">Cross-Chain <span className="bg-gradient-to-r from-[#9945FF] to-[#14F195] bg-clip-text text-transparent">Simplified</span></h1>
-                <p className="text-gray-400 mb-8">Send & Monallo Bridge (Sepolia / Hub / Injective). Natural language. Swap Coming Soon.</p>
+                <p className="text-gray-400 mb-8">Monallo AI Agent makes on-chain features such as Send, Bridge, and Stake more convenient and efficient. Swap is coming soon.</p>
                 <div className="flex gap-4">
                   {!isConnected && <button onClick={() => setShowWalletModal(true)} className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#9945FF] to-[#7C3AED]"><Wallet className="w-5 h-5" />Connect</button>}
                   <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/5 border border-white/10"><Lock className="w-4 h-4 text-[#14F195]" /><span className="text-sm text-gray-300">Secure</span></div>
@@ -2463,7 +2503,7 @@ export default function AIPayPage() {
                             (!dollarPickerSupported ? (
                               <div className="px-4 py-4 text-center">
                                 <p className="text-sm text-gray-400">$ token suggestions are only available on AI Pay testnets</p>
-                                <p className="text-xs text-gray-500 mt-1">Switch to Sepolia, Polkadot Hub, or Injective Testnet</p>
+                                <p className="text-xs text-gray-500 mt-1">Switch to Sepolia, Polkadot Hub, Injective Testnet, or PlatON Dev</p>
                               </div>
                             ) : dollarList.length === 0 ? (
                               <div className="px-4 py-4 text-center">

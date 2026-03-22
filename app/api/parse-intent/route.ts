@@ -30,7 +30,7 @@ Output ONLY a single valid JSON object, no markdown, no code block, no explanati
   "sender": "sender address or empty string",
   "receiver": "recipient address or empty string",
   "amount": "numeric amount as string",
-  "token": "token symbol e.g. ETH, PAS, INJ",
+  "token": "token symbol e.g. ETH, PAS, INJ, LAT",
   "source_network": "source chain/network name or empty",
   "target_network": "target chain/network name or empty",
   "from_token": "empty string (Swap not supported)",
@@ -41,8 +41,8 @@ Rules:
 - action must be one of: Send, Bridge, Stake, Unknown. Use Unknown if the message is unclear or not a DeFi action.
 - **Swap is under development.** If the user asks to swap or exchange tokens, output action: "Unknown" and leave from_token/to_token empty.
 - For Send/Transfer: extract receiver (0x... or address), amount, token. sender can be empty (current user).
-  **Monallo AI Pay Send is restricted by network:** (1) Polkadot Hub supports ONLY PAS for Send. (2) Sepolia supports ONLY ETH for Send. (3) Injective (Injective EVM testnet) supports ONLY INJ for Send.
-  Infer network from token: if user says PAS or Polkadot Hub → set source_network and target_network to "Polkadot Hub", token to "PAS". If user says ETH or Sepolia → set source_network and target_network to "Sepolia", token to "ETH". If user says INJ or Injective → set source_network and target_network to "Injective", token to "INJ".
+  **Monallo AI Pay Send is restricted by network:** (1) Polkadot Hub supports ONLY PAS for Send. (2) Sepolia supports ONLY ETH for Send. (3) Injective (Injective EVM testnet) supports ONLY INJ for Send. (4) PlatON Dev supports ONLY LAT for Send.
+  Infer network from token: if user says PAS or Polkadot Hub → set source_network and target_network to "Polkadot Hub", token to "PAS". If user says ETH or Sepolia → set source_network and target_network to "Sepolia", token to "ETH". If user says INJ or Injective → set source_network and target_network to "Injective", token to "INJ". If user says LAT or PlatON or PlatON Dev → set source_network and target_network to "PlatON Dev", token to "LAT".
 - For Bridge: extract amount, token, source_network, target_network, receiver if mentioned.
   **Supported networks (Monallo lock-mint / unlock):** "Sepolia", "Polkadot Hub", "Injective" (Injective EVM testnet).
   **Open lock directions (native token on source → wrapped on target):** Sepolia ETH → Polkadot Hub or Injective; Polkadot Hub PAS → Sepolia or Injective; Injective INJ → Sepolia or Polkadot Hub.

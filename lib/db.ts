@@ -171,6 +171,7 @@ function getDb(): Database.Database {
   try { db.exec("ALTER TABLE store_usage_events ADD COLUMN settle_tx_hash TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE store_credit_mints ADD COLUMN mint_tx_hash TEXT"); } catch (_) {}
   try { db.exec("ALTER TABLE store_usage_events ADD COLUMN charge_method TEXT NOT NULL DEFAULT 'mon'"); } catch (_) {}
+  try { db.exec("ALTER TABLE store_usage_events ADD COLUMN settle_ledger_chain_id INTEGER"); } catch (_) {}
   return db;
 }
 
@@ -421,13 +422,25 @@ export function insertStoreUsageEvent(row: {
   return idRow.id;
 }
 
-export function setStoreUsageEventSettledMon(usageEventId: number, settledMonRaw: number, settleTxHash?: string | null): void {
+export function setStoreUsageEventSettledMon(
+  usageEventId: number,
+  settledMonRaw: number,
+  settleTxHash?: string | null,
+  settleLedgerChainId?: number | null
+): void {
   const db = getDb();
   const id = Math.max(0, Math.floor(usageEventId));
   const amt = Math.max(0, Math.floor(settledMonRaw));
   if (!id) return;
   if (settleTxHash) {
-    db.prepare("UPDATE store_usage_events SET settled_mon = ?, settle_tx_hash = ? WHERE id = ?").run(amt, settleTxHash, id);
+    const chainId =
+      settleLedgerChainId != null && Number.isFinite(settleLedgerChainId) ? Math.floor(settleLedgerChainId) : null;
+    db.prepare("UPDATE store_usage_events SET settled_mon = ?, settle_tx_hash = ?, settle_ledger_chain_id = ? WHERE id = ?").run(
+      amt,
+      settleTxHash,
+      chainId,
+      id
+    );
     return;
   }
   db.prepare("UPDATE store_usage_events SET settled_mon = ? WHERE id = ?").run(amt, id);
@@ -536,12 +549,13 @@ export function listStoreUsageEventsByWallet(
   charged_mon: number;
   charge_method: string;
   settle_tx_hash: string | null;
+  settle_ledger_chain_id: number | null;
   created_at: number;
 }[] {
   const db = getDb();
   const normalized = walletAddress.trim().toLowerCase();
   const rows = db.prepare(
-    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.charged_tokens, e.charged_mon, e.charge_method, e.settle_tx_hash, e.created_at
+    `SELECT e.id, e.model, e.prompt_tokens, e.completion_tokens, e.cost_mon, e.charged_tokens, e.charged_mon, e.charge_method, e.settle_tx_hash, e.settle_ledger_chain_id, e.created_at
      FROM store_usage_events e
      INNER JOIN store_users u ON u.id = e.user_id
      WHERE u.wallet_address = ?
@@ -557,6 +571,7 @@ export function listStoreUsageEventsByWallet(
     charged_mon: number;
     charge_method: string;
     settle_tx_hash: string | null;
+    settle_ledger_chain_id: number | null;
     created_at: number;
   }[];
   return rows;

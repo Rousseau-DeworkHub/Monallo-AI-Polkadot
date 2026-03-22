@@ -11,7 +11,9 @@ import { ethers } from "ethers";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-const STORE_CHAINS = SUPPORTED_CHAINS.filter((c) => c.id === "polkadot-hub-testnet" || c.id === "injective-testnet");
+const STORE_CHAINS = SUPPORTED_CHAINS.filter(
+  (c) => c.id === "polkadot-hub-testnet" || c.id === "injective-testnet" || c.id === "platon-dev"
+);
 
 /** Pack discount by index: 1M=95%, 5M=92%, 10M=90%, 20M=85%, 50M=80%, 100M=70% */
 const PACK_DISCOUNTS = [0.95, 0.92, 0.9, 0.85, 0.8, 0.7] as const;
@@ -69,14 +71,26 @@ const PAYMENT_TOKENS: PaymentToken[] = [
   ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim()
     ? [{ symbol: "maoPAS.PH", name: "maoPAS.PH", chainId: "injective-testnet", iconKey: "PAS", contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_INJECTIVE.trim(), decimals: 18 }]
     : []),
+  { symbol: "LAT", name: "LAT", chainId: "platon-dev", iconKey: "LAT", decimals: 18 },
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV.trim()
+    ? [{ symbol: "maoETH.Sepolia", name: "maoETH.Sepolia", chainId: "platon-dev", iconKey: "ETH", contract: process.env.NEXT_PUBLIC_WRAPPED_ETH_PLATON_DEV.trim(), decimals: 18 }]
+    : []),
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV.trim()
+    ? [{ symbol: "maoPAS.PH", name: "maoPAS.PH", chainId: "platon-dev", iconKey: "PAS", contract: process.env.NEXT_PUBLIC_WRAPPED_PAS_PLATON_DEV.trim(), decimals: 18 }]
+    : []),
+  ...(typeof process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV === "string" && process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV.trim()
+    ? [{ symbol: "maoINJ.Injective", name: "maoINJ.Injective", chainId: "platon-dev", iconKey: "INJ", contract: process.env.NEXT_PUBLIC_WRAPPED_INJ_PLATON_DEV.trim(), decimals: 18 }]
+    : []),
 ];
 
 const SEPOLIA_CHAIN_ID = 11155111;
 const POLKADOT_HUB_CHAIN_ID = 420420417;
 const INJECTIVE_EVM_CHAIN_ID = 1439;
+const PLATON_DEV_CHAIN_ID = 20250407;
 function getChainIdForPayment(chainIdKey: string): number {
   if (chainIdKey === "sepolia") return SEPOLIA_CHAIN_ID;
   if (chainIdKey === "injective-testnet") return INJECTIVE_EVM_CHAIN_ID;
+  if (chainIdKey === "platon-dev") return PLATON_DEV_CHAIN_ID;
   return POLKADOT_HUB_CHAIN_ID;
 }
 
@@ -84,6 +98,7 @@ const TokenLogos: Record<string, string> = {
   ETH: "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png",
   PAS: "https://www.okx.com/cdn/oksupport/asset/currency/icon/dot.png",
   INJ: "https://www.okx.com/cdn/oksupport/asset/currency/icon/inj20250424102359.png?x-oss-process=image/format,webp/ignore-error,1",
+  LAT: "https://www.okx.com/cdn/oksupport/asset/currency/icon/lat.png?x-oss-process=image/format,webp/ignore-error,1",
 };
 
 /** Recharge MON presets (1 USD = 1 MON) */
@@ -110,7 +125,15 @@ const EXPLORER_BY_CHAIN_ID: Record<number, string> = {
   [11155111]: "https://sepolia.etherscan.io",
   [420420417]: "https://blockscout-testnet.polkadot.io",
   [1439]: "https://testnet.blockscout.injective.network",
+  [PLATON_DEV_CHAIN_ID]: "https://devnet3scan.platon.network",
 };
+
+function consumptionSettleExplorerBase(settleLedgerChainId: number | null | undefined): string | undefined {
+  if (settleLedgerChainId != null && Number.isFinite(settleLedgerChainId) && EXPLORER_BY_CHAIN_ID[settleLedgerChainId]) {
+    return EXPLORER_BY_CHAIN_ID[settleLedgerChainId];
+  }
+  return EXPLORER_BY_CHAIN_ID[POLKADOT_HUB_CHAIN_ID];
+}
 
 function formatWalletTokenAmount(raw: bigint, decimals: number): string {
   const s = ethers.formatUnits(raw, decimals);
@@ -820,7 +843,19 @@ function HistoryModal({
   onClose: () => void;
   loading: boolean;
   purchaseHistory: PurchaseRecord[];
-  consumptionHistory: { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[];
+  consumptionHistory: {
+    id: number;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_mon: number;
+    charged_tokens: number;
+    charged_mon: number;
+    charge_method: string;
+    settle_tx_hash: string | null;
+    settle_ledger_chain_id?: number | null;
+    created_at: number;
+  }[];
   models: LLMModelInfo[];
 }) {
   const [tab, setTab] = useState<"purchase" | "consumption">("purchase");
@@ -1035,7 +1070,9 @@ function HistoryModal({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/[0.06]">
-                          {consumptionRows.map((c) => (
+                          {consumptionRows.map((c) => {
+                            const settleExplorer = consumptionSettleExplorerBase(c.settle_ledger_chain_id);
+                            return (
                             <tr key={c.id} className="text-gray-300">
                               <td className="px-4 py-3 text-white font-medium whitespace-nowrap">{salesNameById.current[c.model] ?? c.model}</td>
                               <td className="px-4 py-3 text-right whitespace-nowrap">{c.prompt_tokens.toLocaleString()}</td>
@@ -1050,9 +1087,9 @@ function HistoryModal({
                                     Package +
                                     <span className="inline-flex items-center gap-1">
                                       MON
-                                      {c.settle_tx_hash && EXPLORER_BY_CHAIN_ID[420420417] && (
+                                      {c.settle_tx_hash && settleExplorer && (
                                         <a
-                                          href={`${EXPLORER_BY_CHAIN_ID[420420417]}/tx/${c.settle_tx_hash}`}
+                                          href={`${settleExplorer}/tx/${c.settle_tx_hash}`}
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           className="inline-flex items-center hover:text-white"
@@ -1066,9 +1103,9 @@ function HistoryModal({
                                 ) : (
                                   <span className="inline-flex items-center gap-1">
                                     MON
-                                    {c.settle_tx_hash && EXPLORER_BY_CHAIN_ID[420420417] && (
+                                    {c.settle_tx_hash && settleExplorer && (
                                       <a
-                                        href={`${EXPLORER_BY_CHAIN_ID[420420417]}/tx/${c.settle_tx_hash}`}
+                                        href={`${settleExplorer}/tx/${c.settle_tx_hash}`}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="inline-flex items-center hover:text-white"
@@ -1082,7 +1119,8 @@ function HistoryModal({
                               </td>
                               <td className="px-4 py-3 text-right text-xs text-gray-500 whitespace-nowrap">{new Date(c.created_at * 1000).toLocaleString()}</td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -1145,7 +1183,21 @@ export default function StorePage() {
   const [paymentTokenPriceUsd, setPaymentTokenPriceUsd] = useState<number | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [purchaseHistory, setPurchaseHistory] = useState<PurchaseRecord[]>([]);
-  const [consumptionHistory, setConsumptionHistory] = useState<{ id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[]>([]);
+  const [consumptionHistory, setConsumptionHistory] = useState<
+    {
+      id: number;
+      model: string;
+      prompt_tokens: number;
+      completion_tokens: number;
+      cost_mon: number;
+      charged_tokens: number;
+      charged_mon: number;
+      charge_method: string;
+      settle_tx_hash: string | null;
+      settle_ledger_chain_id?: number | null;
+      created_at: number;
+    }[]
+  >([]);
   const [recordIndex, setRecordIndex] = useState(0);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1298,7 +1350,19 @@ export default function StorePage() {
     try {
       const res = await fetch(`/api/store/usage?address=${encodeURIComponent(address.trim())}&limit=100`);
       if (!res.ok) return;
-      const rows = (await res.json()) as { id: number; model: string; prompt_tokens: number; completion_tokens: number; cost_mon: number; charged_tokens: number; charged_mon: number; charge_method: string; settle_tx_hash: string | null; created_at: number }[];
+      const rows = (await res.json()) as {
+        id: number;
+        model: string;
+        prompt_tokens: number;
+        completion_tokens: number;
+        cost_mon: number;
+        charged_tokens: number;
+        charged_mon: number;
+        charge_method: string;
+        settle_tx_hash: string | null;
+        settle_ledger_chain_id?: number | null;
+        created_at: number;
+      }[];
       setConsumptionHistory(Array.isArray(rows) ? rows : []);
     } catch (_) {
       setConsumptionHistory([]);
@@ -1456,7 +1520,9 @@ export default function StorePage() {
                   ? "Sepolia"
                   : currentPaymentToken?.chainId === "injective-testnet"
                     ? "Injective"
-                    : "Polkadot Hub"
+                    : currentPaymentToken?.chainId === "platon-dev"
+                      ? "PlatON Dev"
+                      : "Polkadot Hub"
               } to pay with ${currentPaymentToken?.symbol ?? "crypto"}`
             : !canPay
               ? "Select network"
@@ -1656,7 +1722,7 @@ export default function StorePage() {
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">
             Monallo <span className="bg-gradient-to-r from-[#F68521] to-[#FFB347] bg-clip-text text-transparent">Store</span>
           </h1>
-          <p className="text-gray-400 mb-6">Purchase compute tokens for GPT-5.2, MiniMax M2.5, Gemini 3.1, Qwen 3.5, Seed 1.8 and more. Pay with ETH, PAS, INJ or wrapped assets.</p>
+          <p className="text-gray-400 mb-6">Purchase compute tokens for GPT-5.2, MiniMax M2.5, Gemini 3.1, Qwen 3.5, Seed 1.8 and more. Pay with ETH, PAS, INJ, LAT or wrapped assets on Polkadot Hub, Injective, or PlatON Dev.</p>
           <div className="flex flex-wrap gap-3">
             <button
               type="button"

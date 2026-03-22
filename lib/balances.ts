@@ -1,5 +1,5 @@
 /**
- * 从链上获取真实余额，从 CoinGecko 获取代币价格，用于 Your Balance 与 Total Value 同步。
+ * 从链上获取真实余额；标价以 OKX（ETH/DOT/INJ/LAT 等）为主、CoinGecko 为辅，用于 Your Balance 与 Total Value 同步。
  */
 
 const ERC20_ABI = [
@@ -44,6 +44,7 @@ const COINGECKO_IDS: Record<string, string> = {
 const OKX_ETH_SYMBOLS = ["ETH", "SEPOLIA_ETH", "maoETH.Sepolia"];
 const OKX_DOT_SYMBOLS = ["DOT", "PAS", "maoPAS.PH"];
 const OKX_INJ_SYMBOLS = ["INJ", "maoINJ.Injective"];
+const OKX_LAT_SYMBOLS = ["LAT"];
 
 /** 从 OKX 获取永续合约最新价（last） */
 async function fetchOkxTicker(instId: string): Promise<number> {
@@ -58,34 +59,44 @@ async function fetchOkxTicker(instId: string): Promise<number> {
   }
 }
 
-/** 从 OKX 获取 Sepolia ETH、Polkadot Hub PAS(DOT)、INJ 的美元价（ETH/DOT 用 *-USD-SWAP，INJ 用 INJ-USDT-SWAP），用于 Your Balance */
-export async function fetchOkxPrices(): Promise<{ ETH: number; DOT: number; INJ: number }> {
-  const [ETH, DOT, INJ] = await Promise.all([
+/** 从 OKX 获取 ETH、DOT、INJ、LAT 的美元参考价（ETH/DOT 用 *-USD-SWAP，INJ 用 INJ-USDT-SWAP，LAT 用 LAT-USD），用于 Your Balance */
+export async function fetchOkxPrices(): Promise<{ ETH: number; DOT: number; INJ: number; LAT: number }> {
+  const [ETH, DOT, INJ, LAT] = await Promise.all([
     fetchOkxTicker("ETH-USD-SWAP"),
     fetchOkxTicker("DOT-USD-SWAP"),
     fetchOkxTicker("INJ-USDT-SWAP"),
+    fetchOkxTicker("LAT-USD"),
   ]);
-  return { ETH, DOT, INJ };
+  return { ETH, DOT, INJ, LAT };
 }
 
-/** 根据 symbol 从 OKX 价格对象取价（仅对 ETH/DOT/INJ 相关符号有效） */
-export function getOkxPriceForSymbol(symbol: string, prices: { ETH: number; DOT: number; INJ: number }): number {
+/** 根据 symbol 从 OKX 价格对象取价（ETH / DOT / INJ / LAT 相关符号） */
+export function getOkxPriceForSymbol(symbol: string, prices: { ETH: number; DOT: number; INJ: number; LAT: number }): number {
   if (OKX_ETH_SYMBOLS.includes(symbol)) return prices.ETH;
   if (OKX_DOT_SYMBOLS.includes(symbol)) return prices.DOT;
   if (OKX_INJ_SYMBOLS.includes(symbol)) return prices.INJ;
+  if (OKX_LAT_SYMBOLS.includes(symbol)) return prices.LAT;
   return 0;
 }
 
-/** 从 CoinGecko 获取代币美元单价（无需 API Key）；ETH/DOT/PAS/mao* 使用 OKX */
+/** 从 CoinGecko 获取代币美元单价（无需 API Key）；ETH/DOT/INJ/LAT 及 mao* 使用 OKX */
 export async function fetchTokenPrices(symbols: string[]): Promise<Record<string, number>> {
   const okxSymbols = symbols.filter(
-    (s) => OKX_ETH_SYMBOLS.includes(s) || OKX_DOT_SYMBOLS.includes(s) || OKX_INJ_SYMBOLS.includes(s)
+    (s) =>
+      OKX_ETH_SYMBOLS.includes(s) ||
+      OKX_DOT_SYMBOLS.includes(s) ||
+      OKX_INJ_SYMBOLS.includes(s) ||
+      OKX_LAT_SYMBOLS.includes(s)
   );
   const cgSymbols = symbols.filter(
-    (s) => !OKX_ETH_SYMBOLS.includes(s) && !OKX_DOT_SYMBOLS.includes(s) && !OKX_INJ_SYMBOLS.includes(s)
+    (s) =>
+      !OKX_ETH_SYMBOLS.includes(s) &&
+      !OKX_DOT_SYMBOLS.includes(s) &&
+      !OKX_INJ_SYMBOLS.includes(s) &&
+      !OKX_LAT_SYMBOLS.includes(s)
   );
 
-  let okx: { ETH: number; DOT: number; INJ: number } = { ETH: 0, DOT: 0, INJ: 0 };
+  let okx: { ETH: number; DOT: number; INJ: number; LAT: number } = { ETH: 0, DOT: 0, INJ: 0, LAT: 0 };
   if (okxSymbols.length > 0) okx = await fetchOkxPrices();
 
   const out: Record<string, number> = {};
@@ -93,6 +104,7 @@ export async function fetchTokenPrices(symbols: string[]): Promise<Record<string
     if (OKX_ETH_SYMBOLS.includes(symbol)) out[symbol] = okx.ETH;
     else if (OKX_DOT_SYMBOLS.includes(symbol)) out[symbol] = okx.DOT;
     else if (OKX_INJ_SYMBOLS.includes(symbol)) out[symbol] = okx.INJ;
+    else if (OKX_LAT_SYMBOLS.includes(symbol)) out[symbol] = okx.LAT;
     else out[symbol] = 0;
   }
 
